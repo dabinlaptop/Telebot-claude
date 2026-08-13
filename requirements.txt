@@ -1,0 +1,8 @@
+python-telegram-bot==21.4
+ccxt==4.3.87
+pandas==2.2.2
+ta==0.11.0
+aiosqlite==0.20.0
+APScheduler==3.10.4
+python-dotenv==1.0.1
+matplotlib==3.9.0

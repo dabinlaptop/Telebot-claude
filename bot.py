@@ -3,15 +3,16 @@
 اجرا: python bot.py
 """
 import logging
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import BOT_TOKEN, AUTO_SCAN_INTERVAL
 import database as db
 from scheduler import scan_job
 from handlers.basic import start, help_command
-from handlers.analysis import signal_command, chart_command, price_command, top_command
+from handlers.analysis import signal_command, chart_command, price_command, top_command, gainers_command
 from handlers.watchlist import watch_command, unwatch_command, mywatchlist_command, autoscan_command
+from handlers.callbacks import callback_router
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -43,13 +44,15 @@ def main():
     app.add_handler(CommandHandler("chart", chart_command))
     app.add_handler(CommandHandler("price", price_command))
     app.add_handler(CommandHandler("top", top_command))
+    app.add_handler(CommandHandler("gainers", gainers_command))
     app.add_handler(CommandHandler("watch", watch_command))
     app.add_handler(CommandHandler("unwatch", unwatch_command))
     app.add_handler(CommandHandler("mywatchlist", mywatchlist_command))
     app.add_handler(CommandHandler("autoscan", autoscan_command))
+    app.add_handler(CallbackQueryHandler(callback_router))
 
     logger.info("ربات در حال اجراست (polling)...")
-    app.run_polling(allowed_updates=["message"])
+    app.run_polling(allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":

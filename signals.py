@@ -11,7 +11,7 @@ from config import (
     TIMEFRAMES, RSI_OVERSOLD, RSI_OVERBOUGHT,
     STRONG_SIGNAL_THRESHOLD, WEAK_SIGNAL_THRESHOLD
 )
-from indicators import add_indicators
+from indicators import add_indicators, detect_candlestick_patterns, pattern_score, volume_score
 from exchange import ExchangeClient
 
 
@@ -23,13 +23,17 @@ class TimeframeResult:
     macd_score: int
     ema_score: int
     bb_score: int
+    volume_score: int
+    pattern_score: int
     rsi_value: float
     macd_hist: float
     close_price: float
+    patterns: list = field(default_factory=list)
 
     @property
     def raw_score(self) -> int:
-        return self.rsi_score + self.macd_score + self.ema_score + self.bb_score
+        return (self.rsi_score + self.macd_score + self.ema_score
+                 + self.bb_score + self.volume_score + self.pattern_score)
 
     @property
     def weighted_score(self) -> int:
@@ -43,6 +47,9 @@ class SignalResult:
     max_possible_score: int
     signal_type: str
     current_price: float
+    quote_volume_24h: float = 0.0
+    price_change_24h_percent: float = 0.0
+    liquidity_level: str = "نامشخص"
     timeframe_results: list = field(default_factory=list)
 
     @property
@@ -103,6 +110,15 @@ def _classify(total_score: int) -> str:
     return "NEUTRAL"
 
 
+def _classify_liquidity(quote_volume_24h: float) -> str:
+    """رده‌بندی تقریبی نقدینگی بر اساس حجم معاملات ۲۴ساعته (به USDT) - صرفاً اطلاعاتی"""
+    if quote_volume_24h >= 50_000_000:
+        return "بالا 🟢"
+    if quote_volume_24h >= 5_000_000:
+        return "متوسط 🟡"
+    return "پایین 🔴 (ریسک اسپرد/لغزش قیمت بیشتر)"
+
+
 async def analyze_symbol(client: ExchangeClient, symbol: str) -> SignalResult:
     """تحلیل کامل یک نماد روی همه‌ی تایم‌فریم‌های تنظیم‌شده"""
     timeframe_results = []
@@ -123,6 +139,9 @@ async def analyze_symbol(client: ExchangeClient, symbol: str) -> SignalResult:
         macd_score = _score_macd(last_row["macd"], last_row["macd_signal"])
         ema_score = _score_ema(last_row["ema_fast"], last_row["ema_slow"])
         bb_score = _score_bb(last_row["close"], last_row["bb_upper"], last_row["bb_lower"], last_row["bb_mid"])
+        vol_score = volume_score(df)
+        patterns = detect_candlestick_patterns(df)
+        pat_score = pattern_score(patterns)
 
         tf_result = TimeframeResult(
             timeframe=tf,
@@ -131,15 +150,28 @@ async def analyze_symbol(client: ExchangeClient, symbol: str) -> SignalResult:
             macd_score=macd_score,
             ema_score=ema_score,
             bb_score=bb_score,
+            volume_score=vol_score,
+            pattern_score=pat_score,
             rsi_value=float(last_row["rsi"]) if not pd.isna(last_row["rsi"]) else 0.0,
             macd_hist=float(last_row["macd_hist"]) if not pd.isna(last_row["macd_hist"]) else 0.0,
             close_price=last_close,
+            patterns=patterns,
         )
         timeframe_results.append(tf_result)
         total_weighted_score += tf_result.weighted_score
-        max_possible += weight * 4  # ۴ اندیکاتور، هرکدوم حداکثر امتیاز ۱
+        max_possible += weight * 6  # ۶ مولفه‌ی امتیازدهی، هرکدوم حداکثر امتیاز ۱
 
     signal_type = _classify(total_weighted_score)
+
+    # اطلاعات نقدینگی و تغییر ۲۴ساعته از تیکر صرافی
+    quote_volume_24h = 0.0
+    price_change_pct = 0.0
+    try:
+        ticker = await client.exchange.fetch_ticker(symbol)
+        quote_volume_24h = float(ticker.get("quoteVolume") or 0.0)
+        price_change_pct = float(ticker.get("percentage") or 0.0)
+    except Exception:
+        pass
 
     return SignalResult(
         symbol=symbol,
@@ -147,6 +179,9 @@ async def analyze_symbol(client: ExchangeClient, symbol: str) -> SignalResult:
         max_possible_score=max_possible,
         signal_type=signal_type,
         current_price=last_close,
+        quote_volume_24h=quote_volume_24h,
+        price_change_24h_percent=price_change_pct,
+        liquidity_level=_classify_liquidity(quote_volume_24h),
         timeframe_results=timeframe_results,
     )
 

@@ -41,6 +41,32 @@ class ExchangeClient:
     async def load_markets(self):
         await self.exchange.load_markets()
 
+    async def fetch_top_movers(self, top_n: int = 5, min_quote_volume: float = 3_000_000) -> dict:
+        """
+        برگردوندن پرطرفدارترین ارزهای صعودی و نزولی بر اساس تغییر ۲۴ساعته
+        فقط جفت‌های USDT با حجم معاملات کافی در نظر گرفته می‌شن تا نویز حذف بشه.
+        خروجی: {"gainers": [...], "losers": [...]}
+        """
+        tickers = await self.exchange.fetch_tickers()
+        usdt_pairs = []
+        for symbol, t in tickers.items():
+            if not symbol.endswith("/USDT"):
+                continue
+            quote_volume = t.get("quoteVolume") or 0
+            change = t.get("percentage")
+            if change is None or quote_volume < min_quote_volume:
+                continue
+            usdt_pairs.append({
+                "symbol": symbol,
+                "change": change,
+                "price": t.get("last"),
+                "quote_volume": quote_volume,
+            })
+
+        gainers = sorted(usdt_pairs, key=lambda x: x["change"], reverse=True)[:top_n]
+        losers = sorted(usdt_pairs, key=lambda x: x["change"])[:top_n]
+        return {"gainers": gainers, "losers": losers}
+
 
 def normalize_symbol(user_input: str) -> str:
     """

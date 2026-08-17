@@ -70,11 +70,20 @@ def _format_single_result(result) -> str:
     reason_icon = "✅" if result.direction == "BUY" else "❌"
     change_arrow = "📈" if result.price_change_24h_percent >= 0 else "📉"
 
+    if result.adx >= 25:
+        trend_strength = f"قوی 💪 ({result.adx:.0f})"
+    elif result.adx >= 15:
+        trend_strength = f"متوسط ({result.adx:.0f})"
+    else:
+        trend_strength = f"ضعیف/رنج ({result.adx:.0f})"
+
     lines = [
+        f"💎 {result.symbol}",
         f"{meta['emoji']} {meta['fa']}",
         f"🕰 تایم‌فریم: {tf_label}",
         f"📊 اطمینان: {result.confidence_percent}% (امتیاز {result.score:+.1f} از {result.max_score:.0f})",
         f"🧭 جهت: {meta['compass']}",
+        f"💪 قدرت روند (ADX): {trend_strength}",
         "",
         f"💰 قیمت فعلی: ${_fmt_price(result.price)}",
         f"💧 نقدینگی (۲۴س): ${result.quote_volume_24h:,.0f} — {result.liquidity_level}",
@@ -94,7 +103,11 @@ def _format_single_result(result) -> str:
     if result.direction != "NEUTRAL":
         lines += [
             "",
-            f"🎯 نقطه ورود: ${_fmt_price(result.entry)}",
+            f"🎯 نقطه ورود پیشنهادی: ${_fmt_price(result.entry)}",
+        ]
+        if result.entry_basis:
+            lines.append(f"   بر پایه: {result.entry_basis}")
+        lines += [
             "",
             f"🛡 حد ضرر (SL): ${_fmt_price(result.sl)}",
             f"   بر پایه: {result.sl_basis}",

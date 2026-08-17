@@ -7,7 +7,7 @@ from single_analysis import (
     add_extended_indicators, build_single_result, TIMEFRAME_LABELS_FA,
     MIN_CANDLES_FOR_ANALYSIS, RR_TARGETS
 )
-from charts import generate_chart, generate_extended_chart
+from charts import generate_extended_chart
 import database as db
 
 

@@ -157,9 +157,12 @@ def _calc_levels(df: pd.DataFrame, price: float, atr: float, direction: str) -> 
         risk = sl - entry
         tps = [entry - risk * rr for rr in RR_TARGETS]
     else:
-        return {"entry": entry, "sl": None, "sl_basis": None, "tps": [], "risk": None}
+        sl, sl_basis, tps, risk = None, None, [], None
 
-    return {"entry": entry, "sl": sl, "sl_basis": sl_basis, "tps": tps, "risk": risk}
+    return {
+        "entry": entry, "sl": sl, "sl_basis": sl_basis, "tps": tps, "risk": risk,
+        "support": swing_low, "resistance": swing_high,
+    }
 
 
 # ---------- نتیجه‌ی نهایی ----------

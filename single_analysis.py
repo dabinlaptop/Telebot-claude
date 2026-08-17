@@ -36,6 +36,9 @@ ATR_SL_MULT = 1.5            # ضریب پیش‌فرض ATR برای حد ضرر
 MAX_STRUCTURE_SL_ATR_MULT = 3.0  # حداکثر فاصله‌ی مجاز SL ساختاری (بر حسب ATR) تا غیرمنطقی نشه
 RR_TARGETS = [1.0, 2.0, 3.0]     # نسبت‌های ریسک‌به‌ریوارد برای TP1/TP2/TP3
 
+ENTRY_PULLBACK_ATR_MULT = 0.3      # فاصله‌ی پیش‌فرض ورود پیشنهادی از قیمت فعلی (بر حسب ATR)
+MAX_ENTRY_PULLBACK_ATR_MULT = 1.2  # حداکثر فاصله‌ی مجاز پولبک تا EMA12 (وگرنه غیرواقعی می‌شه)
+
 MIN_CANDLES_FOR_ANALYSIS = 100
 
 TIMEFRAME_LABELS_FA = {
@@ -69,6 +72,10 @@ def add_extended_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ema50"] = EMAIndicator(close=close, window=50).ema_indicator()
 
     df["atr"] = AverageTrueRange(high=df["high"], low=df["low"], close=close, window=14).average_true_range()
+
+    from ta.trend import ADXIndicator
+    adx_calc = ADXIndicator(high=df["high"], low=df["low"], close=close, window=14)
+    df["adx"] = adx_calc.adx()
 
     bb = BollingerBands(close=close, window=20, window_dev=2)
     df["bb_upper"] = bb.bollinger_hband()
@@ -120,18 +127,50 @@ def _detect_last_candle_pattern(df: pd.DataFrame) -> dict | None:
     return None
 
 
+# ---------- محاسبه‌ی نقطه‌ی ورود پیشنهادی (نه صرفاً قیمت لحظه‌ای) ----------
+
+def _suggest_entry(price: float, atr: float, direction: str, ema12: float) -> tuple[float, str]:
+    """
+    به‌جای پیشنهاد قیمت لحظه‌ای به‌عنوان نقطه‌ی ورود (که یعنی خرید/فروش در
+    همون لحظه، بدون فاصله از نوسان آنی)، یه نقطه‌ی ورود کمی منطقی‌تر
+    پیشنهاد می‌ده: یا پولبک به EMA12 (اگه فاصله‌ش معقول بود)، یا حداقل
+    یه فاصله‌ی کوچیک (۰.۳ ATR) از قیمت فعلی - تا در اوج/کف لحظه‌ای وارد نشی.
+    """
+    if direction == "BUY":
+        buffer_entry = price - ENTRY_PULLBACK_ATR_MULT * atr
+        if ema12 and 0 < (price - ema12) <= MAX_ENTRY_PULLBACK_ATR_MULT * atr:
+            entry = max(buffer_entry, ema12)  # هرکدوم به قیمت نزدیک‌تره (احتمال پرشدن سفارش بیشتر)
+            basis = f"پولبک به EMA12 (${ema12:,.4f})" if ema12 < 1 else f"پولبک به EMA12 (${ema12:,.2f})"
+        else:
+            entry = buffer_entry
+            basis = f"{ENTRY_PULLBACK_ATR_MULT}× ATR پایین‌تر از قیمت فعلی (اجتناب از ورود در اوج لحظه‌ای)"
+        return entry, basis
+
+    if direction == "SELL":
+        buffer_entry = price + ENTRY_PULLBACK_ATR_MULT * atr
+        if ema12 and 0 < (ema12 - price) <= MAX_ENTRY_PULLBACK_ATR_MULT * atr:
+            entry = min(buffer_entry, ema12)
+            basis = f"پولبک به EMA12 (${ema12:,.4f})" if ema12 < 1 else f"پولبک به EMA12 (${ema12:,.2f})"
+        else:
+            entry = buffer_entry
+            basis = f"{ENTRY_PULLBACK_ATR_MULT}× ATR بالاتر از قیمت فعلی (اجتناب از ورود در کف لحظه‌ای)"
+        return entry, basis
+
+    return price, None
+
+
 # ---------- محاسبه‌ی سطوح ورود/حد ضرر/تارگت ----------
 
-def _calc_levels(df: pd.DataFrame, price: float, atr: float, direction: str) -> dict:
+def _calc_levels(df: pd.DataFrame, price: float, atr: float, direction: str, ema12: float) -> dict:
     """
-    محاسبه‌ی نقطه‌ی ورود، حد ضرر (ترکیب ATR و Swing High/Low) و ۳ تارگت
-    سود بر پایه‌ی R-multiple (نسبت به فاصله‌ی ورود تا حد ضرر)
+    محاسبه‌ی نقطه‌ی ورود پیشنهادی، حد ضرر (ترکیب ATR و Swing High/Low) و
+    ۳ تارگت سود بر پایه‌ی R-multiple (نسبت به فاصله‌ی ورود تا حد ضرر)
     """
     recent = df.tail(SWING_LOOKBACK)
     swing_low = float(recent["low"].min())
     swing_high = float(recent["high"].max())
 
-    entry = price
+    entry, entry_basis = _suggest_entry(price, atr, direction, ema12)
 
     if direction == "BUY":
         atr_sl = entry - ATR_SL_MULT * atr
@@ -157,11 +196,11 @@ def _calc_levels(df: pd.DataFrame, price: float, atr: float, direction: str) -> 
         risk = sl - entry
         tps = [entry - risk * rr for rr in RR_TARGETS]
     else:
-        sl, sl_basis, tps, risk = None, None, [], None
+        entry, entry_basis, sl, sl_basis, tps, risk = price, None, None, None, [], None
 
     return {
-        "entry": entry, "sl": sl, "sl_basis": sl_basis, "tps": tps, "risk": risk,
-        "support": swing_low, "resistance": swing_high,
+        "entry": entry, "entry_basis": entry_basis, "sl": sl, "sl_basis": sl_basis,
+        "tps": tps, "risk": risk, "support": swing_low, "resistance": swing_high,
     }
 
 
@@ -181,12 +220,14 @@ class SingleTFResult:
     ema26: float
     ema50: float
     atr: float
+    adx: float
     score: float
     max_score: float
     direction: str  # "BUY" | "SELL" | "NEUTRAL"
     reasons: list = field(default_factory=list)
     pattern: dict | None = None
     entry: float = 0.0
+    entry_basis: str = None
     sl: float = None
     sl_basis: str = None
     tps: list = field(default_factory=list)
@@ -222,27 +263,32 @@ def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str) -> Single
 
     pattern = _detect_last_candle_pattern(df)
 
-    # هر آیتم: (وزن, حالت صعودی?, متن دلیل صعودی, متن دلیل نزولی) یا None برای خنثی
-    votes = []  # (weight, bull: bool|None, bull_text, bear_text)
+    # هر آیتم: (وزن, حالت صعودی؟, متن دلیل صعودی, متن دلیل نزولی, دسته)
+    # دسته‌ی "trend" یعنی این اندیکاتور صرفاً یه نمای دیگه از همون روند
+    # قیمته (به‌شدت با بقیه‌ی دسته‌ی trend هم‌بسته‌ست) - این‌ها بعداً توی
+    # پیام به یه خط ترکیبی خلاصه می‌شن تا لیست دلایل برای ارزهای مختلف
+    # یکسان و تکراری به‌نظر نرسه. دسته‌ی "unique" یعنی سیگنال مستقل و
+    # متمایزکننده‌ست (این‌ها همیشه جدا نمایش داده می‌شن).
+    votes = []
 
-    votes.append((2, last["ema12"] > last["ema26"], "کراس صعودی EMA 12/26", "کراس نزولی EMA 12/26"))
+    votes.append((2, last["ema12"] > last["ema26"], "کراس صعودی EMA 12/26", "کراس نزولی EMA 12/26", "trend"))
 
     if not pd.isna(last["ema50"]):
-        votes.append((1, price > last["ema50"], "قیمت بالای EMA50 (روند صعودی)", "قیمت زیر EMA50 (روند نزولی)"))
+        votes.append((1, price > last["ema50"], "قیمت بالای EMA50 (روند صعودی)", "قیمت زیر EMA50 (روند نزولی)", "trend"))
 
-    votes.append((2, last["sma20"] > last["sma50"], "روند صعودی SMA (20>50)", "روند نزولی SMA (20<50)"))
+    votes.append((2, last["sma20"] > last["sma50"], "روند صعودی SMA (20>50)", "روند نزولی SMA (20<50)", "trend"))
 
-    votes.append((1, last["macd"] > last["macd_signal"], "کراس صعودی MACD", "کراس نزولی MACD"))
+    votes.append((1, last["macd"] > last["macd_signal"], "کراس صعودی MACD", "کراس نزولی MACD", "trend"))
 
     if len(df) >= 4 and not df["macd_hist"].iloc[-3:].isna().any():
         hist_trend_up = df["macd_hist"].iloc[-1] > df["macd_hist"].iloc[-3]
-        votes.append((1, hist_trend_up, "هیستوگرام MACD در حال تقویت", "هیستوگرام MACD در حال تضعیف"))
+        votes.append((1, hist_trend_up, "هیستوگرام MACD در حال تقویت", "هیستوگرام MACD در حال تضعیف", "trend"))
 
     rsi_val = float(last["rsi"]) if not pd.isna(last["rsi"]) else 50.0
     if rsi_val >= 55:
-        votes.append((1, True, "RSI در ناحیه‌ی صعودی (بالای ۵۵)", ""))
+        votes.append((1, True, f"RSI در ناحیه‌ی صعودی ({rsi_val:.1f})", "", "unique"))
     elif rsi_val <= 45:
-        votes.append((1, False, "", "RSI در ناحیه‌ی نزولی (زیر ۴۵)"))
+        votes.append((1, False, "", f"RSI در ناحیه‌ی نزولی ({rsi_val:.1f})", "unique"))
     # بین ۴۵ تا ۵۵: رأی نمی‌ده (خنثی)
 
     if not pd.isna(last["bb_upper"]) and not pd.isna(last["bb_lower"]):
@@ -251,29 +297,28 @@ def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str) -> Single
             dist_lower = abs(price - last["bb_lower"]) / band_width
             dist_upper = abs(price - last["bb_upper"]) / band_width
             if dist_lower < 0.15:
-                votes.append((1, True, "قیمت نزدیک باند پایین بولینگر (اشباع فروش)", ""))
+                votes.append((1, True, "قیمت نزدیک باند پایین بولینگر (اشباع فروش)", "", "unique"))
             elif dist_upper < 0.15:
-                votes.append((1, False, "", "قیمت نزدیک باند بالای بولینگر (اشباع خرید)"))
+                votes.append((1, False, "", "قیمت نزدیک باند بالای بولینگر (اشباع خرید)", "unique"))
 
     if not pd.isna(last["volume_sma"]) and last["volume_sma"] > 0 and len(df) >= 21:
         if last["volume"] >= last["volume_sma"] * 1.5:
             candle_bull = last["close"] > last["open"]
-            votes.append((1, candle_bull, "اسپایک حجم هم‌جهت با کندل صعودی", "اسپایک حجم هم‌جهت با کندل نزولی"))
+            votes.append((1, candle_bull, "اسپایک حجم هم‌جهت با کندل صعودی", "اسپایک حجم هم‌جهت با کندل نزولی", "unique"))
 
     if len(df) >= 15 and not df["obv"].iloc[-15:].isna().any():
         obv_trend_up = df["obv"].iloc[-1] > df["obv"].iloc[-15]
-        votes.append((1, obv_trend_up, "روند صعودی OBV (تایید جریان پول خرید)", "روند نزولی OBV (تایید جریان پول فروش)"))
+        votes.append((1, obv_trend_up, "روند صعودی OBV (تایید جریان پول خرید)", "روند نزولی OBV (تایید جریان پول فروش)", "unique"))
 
     if pattern:
         if pattern["bias"] > 0:
-            votes.append((1, True, f"الگوی کندلی: {pattern['name']}", ""))
+            votes.append((1, True, f"الگوی کندلی: {pattern['name']}", "", "unique"))
         elif pattern["bias"] < 0:
-            votes.append((1, False, "", f"الگوی کندلی: {pattern['name']}"))
+            votes.append((1, False, "", f"الگوی کندلی: {pattern['name']}", "unique"))
 
     score = 0.0
     max_score = 0.0
-    reasons = []
-    for weight, is_bull, bull_text, bear_text in votes:
+    for weight, is_bull, bull_text, bear_text, category in votes:
         max_score += weight
         if is_bull:
             score += weight
@@ -289,14 +334,37 @@ def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str) -> Single
     else:
         direction = "NEUTRAL"
 
-    if direction == "BUY":
-        reasons = [(2, bull_text) for weight, is_bull, bull_text, bear_text in votes if is_bull and bull_text]
-    elif direction == "SELL":
-        reasons = [(2, bear_text) for weight, is_bull, bull_text, bear_text in votes if not is_bull and bear_text]
-    # مرتب‌سازی دلایل بر اساس وزن (مهم‌ترین دلایل اول) - فعلا وزن رو جدا نگه داشتیم برای توسعه‌ی بعدی
-    reasons = [text for _, text in reasons]
+    reasons = []
+    if direction in ("BUY", "SELL"):
+        matching_trend = []
+        matching_unique = []
+        for weight, is_bull, bull_text, bear_text, category in votes:
+            matches_direction = (direction == "BUY" and is_bull) or (direction == "SELL" and not is_bull)
+            if not matches_direction:
+                continue
+            text = bull_text if direction == "BUY" else bear_text
+            if not text:
+                continue
+            if category == "trend":
+                matching_trend.append(text)
+            else:
+                matching_unique.append(text)
 
-    levels = _calc_levels(df, price, atr, direction)
+        # اگه ۳ یا بیشتر اندیکاتور روندی هم‌جهت بودن (که خیلی وقت‌ها توی
+        # بازار پرروند اتفاق می‌افته)، به‌جای تکرار تک‌تک، یه خط ترکیبی
+        # می‌سازیم تا پیام برای ارزهای مختلف متمایزتر به‌نظر برسه و
+        # اندیکاتورهای منحصربه‌فرد (RSI/OBV/حجم/الگو) بیشتر دیده بشن.
+        if len(matching_trend) >= 3:
+            dir_word = "صعودی" if direction == "BUY" else "نزولی"
+            reasons.append(f"روند {dir_word} در {len(matching_trend)} اندیکاتور (EMA/SMA/MACD) تایید شد")
+        else:
+            reasons.extend(matching_trend)
+
+        # دلایل منحصربه‌فرد رو اول لیست می‌ذاریم چون اطلاعات بیشتری دارن
+        reasons = matching_unique + reasons
+
+    adx_val = float(last["adx"]) if not pd.isna(last.get("adx", float("nan"))) else 0.0
+    levels = _calc_levels(df, price, atr, direction, float(last["ema12"]) if not pd.isna(last["ema12"]) else None)
 
     return SingleTFResult(
         symbol=symbol,
@@ -311,12 +379,14 @@ def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str) -> Single
         ema26=float(last["ema26"]) if not pd.isna(last["ema26"]) else 0.0,
         ema50=float(last["ema50"]) if not pd.isna(last["ema50"]) else 0.0,
         atr=atr,
+        adx=adx_val,
         score=score,
         max_score=max_score,
         direction=direction,
         reasons=reasons,
         pattern=pattern,
         entry=levels["entry"],
+        entry_basis=levels["entry_basis"],
         sl=levels["sl"],
         sl_basis=levels["sl_basis"],
         tps=levels["tps"],

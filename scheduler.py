@@ -62,3 +62,97 @@ async def scan_job(app: Application):
     finally:
         await client.close()
     logger.info("اسکن خودکار تمام شد.")
+
+
+async def check_signal_performance_job(app: Application):
+    """
+    هر سیگنال بازی که از /signal صادر شده رو با قیمت لحظه‌ای مقایسه
+    می‌کنه؛ اگه به سطح جدیدی (TP1/TP2/TP3/SL) نسبت به آخرین وضعیت
+    ثبت‌شده رسیده باشه، وضعیتش رو به‌روز و به کاربر خبر می‌ده. فقط
+    TP3 و SL نهایی‌ان (سیگنال می‌بنده)؛ TP1/TP2 سیگنال رو باز نگه
+    می‌دارن چون ممکنه به سطح بعدی هم برسه.
+    """
+    from config import MAX_OPEN_SIGNALS_PER_CHECK
+
+    logger.info("شروع پایش عملکرد سیگنال‌های باز...")
+    open_signals = await db.get_open_signal_performances(limit=MAX_OPEN_SIGNALS_PER_CHECK)
+    if not open_signals:
+        return
+
+    symbols = {s["symbol"] for s in open_signals}
+    client = ExchangeClient()
+    prices = {}
+    try:
+        for symbol in symbols:
+            try:
+                prices[symbol] = await client.fetch_ticker_price(symbol)
+            except Exception as e:
+                logger.warning(f"دریافت قیمت {symbol} ناموفق بود: {e}")
+    finally:
+        await client.close()
+
+    status_order = {"OPEN": 0, "TP1_HIT": 1, "TP2_HIT": 2, "TP3_HIT": 3}
+
+    for sig in open_signals:
+        price = prices.get(sig["symbol"])
+        if price is None:
+            continue
+
+        candidate_status = None
+        if sig["direction"] == "BUY":
+            if sig["sl"] and price <= sig["sl"]:
+                candidate_status = "SL_HIT"
+            elif sig["tp3"] and price >= sig["tp3"]:
+                candidate_status = "TP3_HIT"
+            elif sig["tp2"] and price >= sig["tp2"]:
+                candidate_status = "TP2_HIT"
+            elif sig["tp1"] and price >= sig["tp1"]:
+                candidate_status = "TP1_HIT"
+        elif sig["direction"] == "SELL":
+            if sig["sl"] and price >= sig["sl"]:
+                candidate_status = "SL_HIT"
+            elif sig["tp3"] and price <= sig["tp3"]:
+                candidate_status = "TP3_HIT"
+            elif sig["tp2"] and price <= sig["tp2"]:
+                candidate_status = "TP2_HIT"
+            elif sig["tp1"] and price <= sig["tp1"]:
+                candidate_status = "TP1_HIT"
+
+        if not candidate_status or candidate_status == sig["status"]:
+            continue  # هیچ پیشرفت جدیدی نسبت به آخرین باری که چک شده نیست
+
+        # SL همیشه یعنی وضعیت تغییر کرده (مگر از قبل SL بوده که بالا رد شد)
+        is_progress = (
+            candidate_status == "SL_HIT"
+            or status_order.get(candidate_status, 0) > status_order.get(sig["status"], 0)
+        )
+        if not is_progress:
+            continue
+
+        should_close = candidate_status in ("TP3_HIT", "SL_HIT")
+        if should_close:
+            await db.close_signal_performance(sig["id"], candidate_status)
+        else:
+            await db.update_signal_status(sig["id"], candidate_status)
+
+        emoji = "🎯" if "TP" in candidate_status else "🛑"
+        status_fa = {
+            "TP1_HIT": "به TP1 رسید", "TP2_HIT": "به TP2 رسید",
+            "TP3_HIT": "به TP3 رسید (سیگنال بسته شد ✅)", "SL_HIT": "به حد ضرر خورد (سیگنال بسته شد ❌)",
+        }[candidate_status]
+        try:
+            await app.bot.send_message(
+                chat_id=sig["user_id"],
+                text=(
+                    f"{emoji} *بروزرسانی سیگنال {sig['symbol']}* ({sig['timeframe']})\n"
+                    f"وضعیت: {status_fa}\n"
+                    f"قیمت فعلی: `{price:,.4f}`\n"
+                    f"ورود: `{sig['entry']:,.4f}`\n\n"
+                    f"برای دیدن آمار کلی: /mystats"
+                ),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.warning(f"ارسال بروزرسانی عملکرد به {sig['user_id']} ناموفق بود: {e}")
+
+    logger.info("پایش عملکرد سیگنال‌ها تمام شد.")

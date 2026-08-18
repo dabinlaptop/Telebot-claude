@@ -53,3 +53,34 @@ DEFAULT_SYMBOLS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"]
 
 # --- محدودیت واچ‌لیست هر کاربر ---
 MAX_WATCHLIST_PER_USER = 15
+
+# --- ادمین‌ها (شناسه عددی تلگرام، جدا شده با کاما در .env) ---
+# مثال در .env: ADMIN_IDS=111111111,222222222
+ADMIN_IDS = [
+    int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()
+]
+
+# --- فیلتر هم‌راستایی چند‌تایم‌فریمی (برای موتور /signal) ---
+# قبل از صدور سیگنال، روند تایم‌فریم بالاتر هم چک می‌شه (فقط هشدار می‌ده، مانع صدور سیگنال نمی‌شه)
+HIGHER_TIMEFRAME_MAP = {
+    "15m": "1h",
+    "1h": "4h",
+    "4h": "1d",
+    "1d": None,  # بالاترین تایم‌فریمه، چیزی برای مقایسه نیست
+}
+
+# --- واگرایی RSI/قیمت ---
+DIVERGENCE_LOOKBACK = 30   # تعداد کندل برای جستجوی واگرایی
+DIVERGENCE_PIVOT_WINDOW = 2  # تعداد کندل هر طرف برای تشخیص سقف/کف محلی
+
+# --- همبستگی با بیت‌کوین ---
+BTC_SYMBOL = "BTC/USDT"
+BTC_CORRELATION_LOOKBACK = 30       # تعداد کندل برای محاسبه‌ی همبستگی
+BTC_HIGH_CORRELATION_THRESHOLD = 0.75  # بالاتر از این یعنی «صرفاً دنبال بازار»
+
+# --- مدیریت ریسک پیش‌فرض (اگه کاربر با /setrisk چیزی تنظیم نکرده باشه) ---
+DEFAULT_RISK_PERCENT = 2.0  # درصد پیش‌فرض ریسک هر معامله از موجودی فرضی
+
+# --- پایش خودکار عملکرد سیگنال‌ها ---
+SIGNAL_PERFORMANCE_CHECK_INTERVAL = 10 * 60  # هر ۱۰ دقیقه وضعیت سیگنال‌های باز رو چک کن
+MAX_OPEN_SIGNALS_PER_CHECK = 200  # سقف تعداد سیگنال باز در هر دور بررسی (جلوگیری از بار زیاد روی API)

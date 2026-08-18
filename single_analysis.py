@@ -18,8 +18,9 @@
 - اسپایک حجم                وزن 1   (هم‌جهت با کندل آخر)
 - روند OBV                 وزن 1   (جریان تجمعی پول - تاییدکننده‌ی مهم)
 - الگوی کندل‌استیک          وزن 1
+- واگرایی RSI/قیمت          وزن 2   (سیگنال بازگشتی قوی، وقتی معتبر تشخیص داده بشه)
 
-حداکثر امتیاز ممکن = 2+1+2+1+1+1+1+1+1+1 = 12
+حداکثر امتیاز ممکن = 2+1+2+1+1+1+1+1+1+1+2 = 14 (واگرایی همیشه رأی نمی‌ده)
 
 حد ضرر (SL): ترکیب ATR و آخرین Swing High/Low - هرکدوم منطقی‌تر و
 نزدیک‌تر به ساختار قیمت بود انتخاب می‌شه (نه صرفاً یه ضریب ثابت).
@@ -127,6 +128,69 @@ def _detect_last_candle_pattern(df: pd.DataFrame) -> dict | None:
     return None
 
 
+# ---------- تشخیص واگرایی RSI/قیمت ----------
+
+DIVERGENCE_LOOKBACK = 30
+PIVOT_WINDOW = 3  # تعداد کندل هر طرف برای تایید سقف/کف محلی
+MIN_RSI_DIVERGENCE_GAP = 5.0    # حداقل اختلاف RSI بین دو پیوت تا واگرایی معتبر باشه (فیلتر نویز)
+MIN_PRICE_MOVE_ATR_MULT = 0.5   # حداقل فاصله‌ی قیمتی بین دو پیوت (بر حسب ATR) تا معنادار باشه
+
+
+def _find_pivots(series: pd.Series, window: int, find_highs: bool) -> list[int]:
+    """اندیس‌های سقف یا کف‌های محلی رو برمی‌گردونه (مقایسه با window کندل هر طرف)"""
+    idxs = []
+    n = len(series)
+    for i in range(window, n - window):
+        segment = series.iloc[i - window: i + window + 1]
+        center = series.iloc[i]
+        if find_highs and center == segment.max() and (segment == center).sum() == 1:
+            idxs.append(i)
+        elif not find_highs and center == segment.min() and (segment == center).sum() == 1:
+            idxs.append(i)
+    return idxs
+
+
+def _detect_rsi_divergence(df: pd.DataFrame) -> dict | None:
+    """
+    واگرایی صعودی: قیمت کف پایین‌تر می‌سازه ولی RSI کف بالاتر می‌سازه
+    (نشونه‌ی تضعیف فشار فروش، احتمال برگشت صعودی)
+    واگرایی نزولی: قیمت سقف بالاتر می‌سازه ولی RSI سقف پایین‌تر می‌سازه
+    (نشونه‌ی تضعیف فشار خرید، احتمال برگشت نزولی)
+
+    پیوت آخر (نزدیک‌ترین به الان) با «مرجع‌دارترین» پیوت قبلی مقایسه می‌شه -
+    یعنی برای کف‌ها، پایین‌ترین کف قبلی (نه صرفاً یکی‌مونده‌به‌آخر که ممکنه
+    یه نوسان جزئی و کم‌اهمیت باشه)، و برای سقف‌ها، بالاترین سقف قبلی.
+    """
+    recent = df.tail(DIVERGENCE_LOOKBACK).reset_index(drop=True)
+    if len(recent) < 2 * PIVOT_WINDOW + 5 or recent["rsi"].isna().any():
+        return None
+
+    atr_val = float(df["atr"].iloc[-1]) if not pd.isna(df["atr"].iloc[-1]) else 0.0
+    min_price_gap = MIN_PRICE_MOVE_ATR_MULT * atr_val if atr_val > 0 else 0.0
+
+    low_pivots = _find_pivots(recent["low"], PIVOT_WINDOW, find_highs=False)
+    if len(low_pivots) >= 2:
+        i_last = low_pivots[-1]
+        prior_candidates = low_pivots[:-1]
+        i_ref = min(prior_candidates, key=lambda i: recent["low"].iloc[i])  # پایین‌ترین کف قبلی
+        price_gap = recent["low"].iloc[i_ref] - recent["low"].iloc[i_last]
+        rsi_gap = recent["rsi"].iloc[i_last] - recent["rsi"].iloc[i_ref]
+        if price_gap > min_price_gap and rsi_gap > MIN_RSI_DIVERGENCE_GAP:
+            return {"type": "bullish", "bias": 1}
+
+    high_pivots = _find_pivots(recent["high"], PIVOT_WINDOW, find_highs=True)
+    if len(high_pivots) >= 2:
+        i_last = high_pivots[-1]
+        prior_candidates = high_pivots[:-1]
+        i_ref = max(prior_candidates, key=lambda i: recent["high"].iloc[i])  # بالاترین سقف قبلی
+        price_gap = recent["high"].iloc[i_last] - recent["high"].iloc[i_ref]
+        rsi_gap = recent["rsi"].iloc[i_ref] - recent["rsi"].iloc[i_last]
+        if price_gap > min_price_gap and rsi_gap > MIN_RSI_DIVERGENCE_GAP:
+            return {"type": "bearish", "bias": -1}
+
+    return None
+
+
 # ---------- محاسبه‌ی نقطه‌ی ورود پیشنهادی (نه صرفاً قیمت لحظه‌ای) ----------
 
 def _suggest_entry(price: float, atr: float, direction: str, ema12: float) -> tuple[float, str]:
@@ -226,6 +290,7 @@ class SingleTFResult:
     direction: str  # "BUY" | "SELL" | "NEUTRAL"
     reasons: list = field(default_factory=list)
     pattern: dict | None = None
+    divergence: dict | None = None
     entry: float = 0.0
     entry_basis: str = None
     sl: float = None
@@ -316,6 +381,13 @@ def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str) -> Single
         elif pattern["bias"] < 0:
             votes.append((1, False, "", f"الگوی کندلی: {pattern['name']}", "unique"))
 
+    divergence = _detect_rsi_divergence(df)
+    if divergence:
+        if divergence["bias"] > 0:
+            votes.append((2, True, "🔀 واگرایی صعودی RSI/قیمت (سیگنال بازگشتی قوی)", "", "unique"))
+        else:
+            votes.append((2, False, "", "🔀 واگرایی نزولی RSI/قیمت (سیگنال بازگشتی قوی)", "unique"))
+
     score = 0.0
     max_score = 0.0
     for weight, is_bull, bull_text, bear_text, category in votes:
@@ -385,6 +457,7 @@ def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str) -> Single
         direction=direction,
         reasons=reasons,
         pattern=pattern,
+        divergence=divergence,
         entry=levels["entry"],
         entry_basis=levels["entry_basis"],
         sl=levels["sl"],

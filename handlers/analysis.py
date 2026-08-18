@@ -8,6 +8,7 @@ from single_analysis import (
     MIN_CANDLES_FOR_ANALYSIS, RR_TARGETS
 )
 from charts import generate_extended_chart
+from market_context import check_higher_timeframe_alignment, check_btc_correlation
 import database as db
 
 
@@ -64,7 +65,33 @@ DIRECTION_META = {
 }
 
 
-def _format_single_result(result) -> str:
+def _calc_position_size(risk_settings: dict, entry: float, sl: float) -> dict | None:
+    """
+    با داشتن موجودی فرضی و درصد ریسک کاربر (از /setrisk)، حجم پوزیشن رو
+    محاسبه می‌کنه: مقدار ریسک دلاری = موجودی × درصد ریسک؛ حجم = ریسک ÷
+    فاصله‌ی ورود تا حد ضرر (روش استاندارد مدیریت ریسک با % ثابت).
+    """
+    if not risk_settings or not entry or not sl:
+        return None
+    balance = risk_settings["account_balance"]
+    risk_percent = risk_settings["risk_percent"]
+    risk_amount = balance * risk_percent / 100
+    per_unit_risk = abs(entry - sl)
+    if per_unit_risk <= 0:
+        return None
+    units = risk_amount / per_unit_risk
+    position_value = units * entry
+    return {
+        "risk_amount": risk_amount,
+        "units": units,
+        "position_value": position_value,
+        "risk_percent": risk_percent,
+        "balance": balance,
+    }
+
+
+def _format_single_result(result, higher_tf_info: dict = None, btc_corr_info: dict = None,
+                           position_size: dict = None) -> str:
     meta = DIRECTION_META[result.direction]
     tf_label = TIMEFRAME_LABELS_FA.get(result.timeframe, result.timeframe)
     reason_icon = "✅" if result.direction == "BUY" else "❌"
@@ -100,6 +127,25 @@ def _format_single_result(result) -> str:
     if result.pattern:
         lines.append(f"• 🕯 الگوی کندلی: {result.pattern['name']}")
 
+    context_lines = []
+    if higher_tf_info:
+        htf_label = TIMEFRAME_LABELS_FA.get(higher_tf_info["higher_tf"], higher_tf_info["higher_tf"])
+        if higher_tf_info["aligned"]:
+            context_lines.append(f"✅ هم‌جهت با روند تایم‌فریم {htf_label}")
+        else:
+            opp = "صعودی" if higher_tf_info["higher_tf_direction"] == "BUY" else "نزولی"
+            context_lines.append(f"⚠️ روند تایم‌فریم {htf_label} مخالفه ({opp}) — احتیاط بیشتر")
+
+    if btc_corr_info:
+        corr_pct = btc_corr_info["correlation"] * 100
+        if btc_corr_info["high_correlation"]:
+            context_lines.append(f"🔗 همبستگی بالا با BTC ({corr_pct:.0f}%) — ممکنه این سیگنال صرفاً دنبال‌کننده‌ی بازار باشه، نه قدرت مستقل این ارز")
+        else:
+            context_lines.append(f"🔓 همبستگی پایین با BTC ({corr_pct:.0f}%) — حرکت نسبتاً مستقل از بازار کلی")
+
+    if context_lines:
+        lines += ["", "🌐 زمینه‌ی بازار:"] + [f"• {c}" for c in context_lines]
+
     if result.direction != "NEUTRAL":
         lines += [
             "",
@@ -117,6 +163,16 @@ def _format_single_result(result) -> str:
         for i, (tp, rr) in enumerate(zip(result.tps, RR_TARGETS), start=1):
             lines.append(f"• TP{i} (۱:{rr:.0f}): ${_fmt_price(tp)}")
 
+        if position_size:
+            lines += [
+                "",
+                f"📐 حجم پوزیشن پیشنهادی (ریسک {position_size['risk_percent']:.1f}% از ${position_size['balance']:,.0f}):",
+                f"• مقدار: {position_size['units']:,.4f} واحد (~${position_size['position_value']:,.2f})",
+                f"• ریسک دلاری: ${position_size['risk_amount']:,.2f}",
+            ]
+        else:
+            lines += ["", "ℹ️ برای محاسبه‌ی خودکار حجم پوزیشن، از `/setrisk موجودی درصد‌ریسک` استفاده کن (مثال: `/setrisk 1000 2`)"]
+
     if result.reasons:
         lines += ["", "📋 دلایل:"]
         for text in result.reasons:
@@ -130,7 +186,7 @@ def _format_single_result(result) -> str:
 
 # ---------- منطق مشترک تحلیل تک‌تایم‌فریمی (توسط دستور و کال‌بک استفاده می‌شه) ----------
 
-async def run_single_timeframe_signal(symbol: str, timeframe: str):
+async def run_single_timeframe_signal(symbol: str, timeframe: str, user_id: int = None):
     """
     خروجی: (متن پیام, بافر تصویر نمودار, کیبورد) یا (None, None, None) اگه نماد نامعتبر بود
     """
@@ -143,7 +199,6 @@ async def run_single_timeframe_signal(symbol: str, timeframe: str):
         df = add_extended_indicators(df)
         result = build_single_result(df, symbol, timeframe)
 
-        # اطلاعات نقدینگی و تغییر ۲۴ساعته از تیکر صرافی
         try:
             ticker = await client.exchange.fetch_ticker(symbol)
             result.quote_volume_24h = float(ticker.get("quoteVolume") or 0.0)
@@ -152,9 +207,31 @@ async def run_single_timeframe_signal(symbol: str, timeframe: str):
         except Exception:
             pass
 
+        higher_tf_info = None
+        btc_corr_info = None
+        if result.direction != "NEUTRAL":
+            try:
+                higher_tf_info = await check_higher_timeframe_alignment(client, symbol, timeframe, result.direction)
+            except Exception:
+                pass
+            try:
+                btc_corr_info = await check_btc_correlation(client, symbol, timeframe)
+            except Exception:
+                pass
+
+        position_size = None
+        if user_id is not None and result.direction != "NEUTRAL":
+            risk_settings = await db.get_user_risk(user_id)
+            position_size = _calc_position_size(risk_settings, result.entry, result.sl)
+
         await db.log_signal(symbol, result.direction, result.confidence_percent, result.price)
 
-        text = _format_single_result(result)
+        if user_id is not None and result.direction != "NEUTRAL":
+            await db.record_signal_performance(
+                user_id, symbol, timeframe, result.direction, result.entry, result.sl, result.tps
+            )
+
+        text = _format_single_result(result, higher_tf_info, btc_corr_info, position_size)
         levels = {"entry": result.entry, "sl": result.sl, "tps": result.tps} if result.direction != "NEUTRAL" else None
         chart_buf = generate_extended_chart(df, symbol, timeframe, levels=levels)
         keyboard = _result_keyboard(symbol, timeframe)

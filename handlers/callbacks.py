@@ -21,9 +21,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "tf" and len(parts) == 3:
         _, symbol, timeframe = parts
+        user_id = query.from_user.id
         await query.edit_message_text(f"⏳ در حال تحلیل {symbol} روی تایم‌فریم {timeframe}...")
         try:
-            text, chart_buf, keyboard = await run_single_timeframe_signal(symbol, timeframe)
+            text, chart_buf, keyboard = await run_single_timeframe_signal(symbol, timeframe, user_id=user_id)
         except Exception as e:
             await query.edit_message_text(f"❌ خطا در تحلیل: {e}")
             return

@@ -225,11 +225,18 @@ def _suggest_entry(price: float, atr: float, direction: str, ema12: float) -> tu
 
 # ---------- محاسبه‌ی سطوح ورود/حد ضرر/تارگت ----------
 
-def _calc_levels(df: pd.DataFrame, price: float, atr: float, direction: str, ema12: float) -> dict:
+def _calc_levels(df: pd.DataFrame, price: float, atr: float, direction: str, ema12: float,
+                  atr_sl_mult: float = None, rr_targets: list = None) -> dict:
     """
     محاسبه‌ی نقطه‌ی ورود پیشنهادی، حد ضرر (ترکیب ATR و Swing High/Low) و
     ۳ تارگت سود بر پایه‌ی R-multiple (نسبت به فاصله‌ی ورود تا حد ضرر)
+
+    atr_sl_mult و rr_targets اختیاری‌ان - اگه داده نشن از مقادیر پیش‌فرض
+    همین فایل استفاده می‌شه؛ پنل وب می‌تونه این‌ها رو override کنه.
     """
+    atr_sl_mult = atr_sl_mult if atr_sl_mult is not None else ATR_SL_MULT
+    rr_targets = rr_targets if rr_targets is not None else RR_TARGETS
+
     recent = df.tail(SWING_LOOKBACK)
     swing_low = float(recent["low"].min())
     swing_high = float(recent["high"].max())
@@ -237,7 +244,7 @@ def _calc_levels(df: pd.DataFrame, price: float, atr: float, direction: str, ema
     entry, entry_basis = _suggest_entry(price, atr, direction, ema12)
 
     if direction == "BUY":
-        atr_sl = entry - ATR_SL_MULT * atr
+        atr_sl = entry - atr_sl_mult * atr
         structure_sl = swing_low - 0.3 * atr
         # اگه حد ضرر ساختاری منطقی‌تر (نزدیک‌تر به قیمت) و در بازه‌ی معقول بود، اون رو انتخاب کن
         if structure_sl < entry and (entry - structure_sl) <= MAX_STRUCTURE_SL_ATR_MULT * atr:
@@ -245,20 +252,20 @@ def _calc_levels(df: pd.DataFrame, price: float, atr: float, direction: str, ema
             sl_basis = "زیر آخرین کف قیمتی (Swing Low)"
         else:
             sl = atr_sl
-            sl_basis = f"{ATR_SL_MULT}× ATR"
+            sl_basis = f"{atr_sl_mult}× ATR"
         risk = entry - sl
-        tps = [entry + risk * rr for rr in RR_TARGETS]
+        tps = [entry + risk * rr for rr in rr_targets]
     elif direction == "SELL":
-        atr_sl = entry + ATR_SL_MULT * atr
+        atr_sl = entry + atr_sl_mult * atr
         structure_sl = swing_high + 0.3 * atr
         if structure_sl > entry and (structure_sl - entry) <= MAX_STRUCTURE_SL_ATR_MULT * atr:
             sl = structure_sl
             sl_basis = "بالای آخرین سقف قیمتی (Swing High)"
         else:
             sl = atr_sl
-            sl_basis = f"{ATR_SL_MULT}× ATR"
+            sl_basis = f"{atr_sl_mult}× ATR"
         risk = sl - entry
-        tps = [entry - risk * rr for rr in RR_TARGETS]
+        tps = [entry - risk * rr for rr in rr_targets]
     else:
         entry, entry_basis, sl, sl_basis, tps, risk = price, None, None, None, [], None
 
@@ -320,8 +327,22 @@ def _classify_liquidity(quote_volume_24h: float) -> str:
     return "پایین 🔴 (ریسک اسپرد/لغزش قیمت بیشتر)"
 
 
-def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str) -> SingleTFResult:
-    """df باید خروجی add_extended_indicators باشه (شامل حداقل ۵۰ کندل معتبر)"""
+DEFAULT_CONFIDENCE_THRESHOLD_FRACTION = 0.25  # حداقل فاصله‌ی امتیاز از صفر (نسبت به حداکثر) برای صدور سیگنال قطعی
+
+
+def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str,
+                         confidence_threshold_fraction: float = None,
+                         atr_sl_mult: float = None, rr_targets: list = None) -> SingleTFResult:
+    """
+    df باید خروجی add_extended_indicators باشه (شامل حداقل ۵۰ کندل معتبر)
+
+    سه پارامتر آخر اختیاری‌ان و از پنل وب/تنظیمات دیتابیس قابل override
+    هستن؛ اگه داده نشن، از مقادیر پیش‌فرض همین فایل استفاده می‌شه.
+    """
+    confidence_threshold_fraction = (
+        confidence_threshold_fraction if confidence_threshold_fraction is not None
+        else DEFAULT_CONFIDENCE_THRESHOLD_FRACTION
+    )
     last = df.iloc[-1]
     price = float(last["close"])
     atr = float(last["atr"]) if not pd.isna(last["atr"]) else 0.0
@@ -398,7 +419,7 @@ def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str) -> Single
             score -= weight
 
     # آستانه: حداقل ۲۵٪ از حداکثر امتیاز فاصله از صفر لازمه تا سیگنال قطعی صادر بشه
-    threshold = max_score * 0.25
+    threshold = max_score * confidence_threshold_fraction
     if score >= threshold:
         direction = "BUY"
     elif score <= -threshold:
@@ -436,7 +457,10 @@ def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str) -> Single
         reasons = matching_unique + reasons
 
     adx_val = float(last["adx"]) if not pd.isna(last.get("adx", float("nan"))) else 0.0
-    levels = _calc_levels(df, price, atr, direction, float(last["ema12"]) if not pd.isna(last["ema12"]) else None)
+    levels = _calc_levels(
+        df, price, atr, direction, float(last["ema12"]) if not pd.isna(last["ema12"]) else None,
+        atr_sl_mult=atr_sl_mult, rr_targets=rr_targets
+    )
 
     return SingleTFResult(
         symbol=symbol,

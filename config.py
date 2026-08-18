@@ -84,3 +84,12 @@ DEFAULT_RISK_PERCENT = 2.0  # درصد پیش‌فرض ریسک هر معامل�
 # --- پایش خودکار عملکرد سیگنال‌ها ---
 SIGNAL_PERFORMANCE_CHECK_INTERVAL = 10 * 60  # هر ۱۰ دقیقه وضعیت سیگنال‌های باز رو چک کن
 MAX_OPEN_SIGNALS_PER_CHECK = 200  # سقف تعداد سیگنال باز در هر دور بررسی (جلوگیری از بار زیاد روی API)
+
+# --- پنل وب مدیریت تنظیمات ---
+# این‌ها رو توی .env تنظیم کن؛ پیش‌فرض‌های زیر فقط برای جلوگیری از کرش
+# محیط توسعه‌ست - حتماً روی پروداکشن عوضشون کن
+WEB_PANEL_USERNAME = os.getenv("WEB_PANEL_USERNAME", "admin")
+WEB_PANEL_PASSWORD = os.getenv("WEB_PANEL_PASSWORD", "")
+WEB_PANEL_ENABLED = os.getenv("WEB_PANEL_ENABLED", "true").lower() in ("1", "true", "yes")
+# Railway خودش این متغیر رو ست می‌کنه؛ لوکال دیفالت 8000
+WEB_PANEL_PORT = int(os.getenv("PORT", "8000"))

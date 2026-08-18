@@ -94,4 +94,48 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines += ["", "جزئیات:"] + detail_lines
 
     lines.append("\nℹ️ وضعیت هر سیگنال به‌صورت خودکار هر ۱۰ دقیقه چک می‌شه و اگه به TP/SL برسه، بهت پیام می‌دم.")
+    lines.append("برای دیدن و مدیریت لیست سیگنال‌های فعال: /mysignals")
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+STATUS_FA = {
+    "OPEN": "باز — هنوز به هیچ سطحی نرسیده",
+    "TP1_HIT": "رسیده به TP1 ✅",
+    "TP2_HIT": "رسیده به TP2 ✅✅",
+}
+
+
+async def mysignals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    لیست سیگنال‌های فعال (پیگیری‌شده) کاربر، هرکدوم با دکمه‌ی حذف
+    جداگانه - چون هر سیگنال پیام جدای خودش رو داره، حذف یکی تاثیری
+    روی بقیه نمی‌ذاره.
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    user_id = update.effective_user.id
+    signals = await db.get_user_open_signals(user_id)
+
+    if not signals:
+        await update.message.reply_text(
+            "هیچ سیگنال فعالی نداری. وقتی از `/signal` سیگنال می‌گیری و "
+            "دکمه‌ی «📌 پیگیری این سیگنال» رو می‌زنی، اینجا لیست می‌شه.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    await update.message.reply_text(f"📋 *{len(signals)} سیگنال فعال داری:*", parse_mode=ParseMode.MARKDOWN)
+
+    for sig in signals:
+        emoji = "🟢" if sig["direction"] == "BUY" else "🔴"
+        status_text = STATUS_FA.get(sig["status"], sig["status"])
+        text = (
+            f"{emoji} *{sig['symbol']}* ({sig['timeframe']}) — {sig['direction']}\n"
+            f"ورود: `{sig['entry']:,.4f}` | SL: `{sig['sl']:,.4f}`\n"
+            f"وضعیت: {status_text}\n"
+            f"ثبت‌شده: {sig['created_at'][:10]}"
+        )
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗑 حذف از پایش", callback_data=f"delsig:{sig['id']}")
+        ]])
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)

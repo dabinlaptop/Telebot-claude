@@ -5,7 +5,7 @@ from exchange import ExchangeClient, normalize_symbol
 from signals import analyze_symbol, SIGNAL_EMOJI, SIGNAL_FA
 from single_analysis import (
     add_extended_indicators, build_single_result, TIMEFRAME_LABELS_FA,
-    MIN_CANDLES_FOR_ANALYSIS, RR_TARGETS
+    MIN_CANDLES_FOR_ANALYSIS
 )
 from charts import generate_extended_chart
 from market_context import check_higher_timeframe_alignment, check_btc_correlation
@@ -28,7 +28,7 @@ def _timeframe_keyboard(symbol: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-def _result_keyboard(symbol: str, timeframe: str) -> InlineKeyboardMarkup:
+def _result_keyboard(symbol: str, timeframe: str, pending_id: int = None) -> InlineKeyboardMarkup:
     buttons = [
         [
             InlineKeyboardButton("🔄 بروزرسانی", callback_data=f"tf:{symbol}:{timeframe}"),
@@ -39,6 +39,11 @@ def _result_keyboard(symbol: str, timeframe: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("💰 قیمت لحظه‌ای", callback_data=f"price:{symbol}"),
         ],
     ]
+    if pending_id is not None:
+        buttons.append([
+            InlineKeyboardButton("📌 پیگیری این سیگنال", callback_data=f"track:{pending_id}"),
+            InlineKeyboardButton("❌ پیگیری نکن", callback_data=f"notrack:{pending_id}"),
+        ])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -160,8 +165,9 @@ def _format_single_result(result, higher_tf_info: dict = None, btc_corr_info: di
             "",
             "🎯 تارگت‌های سود:",
         ]
-        for i, (tp, rr) in enumerate(zip(result.tps, RR_TARGETS), start=1):
-            lines.append(f"• TP{i} (۱:{rr:.0f}): ${_fmt_price(tp)}")
+        for i, tp in enumerate(result.tps, start=1):
+            rr = abs(tp - result.entry) / result.risk if result.risk else 0
+            lines.append(f"• TP{i} (۱:{rr:.1f}): ${_fmt_price(tp)}")
 
         if position_size:
             lines += [
@@ -181,6 +187,8 @@ def _format_single_result(result, higher_tf_info: dict = None, btc_corr_info: di
         lines += ["", "📋 اندیکاتورها به‌قدر کافی هم‌جهت نبودن، سیگنال قطعی وجود نداره."]
 
     lines.append("\n⚠️ توصیه مالی نیست — همیشه مدیریت ریسک و حجم پوزیشن با خودته.")
+    if result.direction != "NEUTRAL":
+        lines.append("📌 اگه می‌خوای نتیجه‌ی این سیگنال رو پیگیری کنم (برای آمار `/mystats`)، دکمه‌ی زیر رو بزن.")
     return "\n".join(lines)
 
 
@@ -197,7 +205,23 @@ async def run_single_timeframe_signal(symbol: str, timeframe: str, user_id: int 
 
         df = await client.fetch_ohlcv_df(symbol, timeframe, limit=MIN_CANDLES_FOR_ANALYSIS)
         df = add_extended_indicators(df)
-        result = build_single_result(df, symbol, timeframe)
+
+        # تنظیمات قابل تغییر از پنل وب (اگه ادمین چیزی تغییر نداده باشه، مقادیر پیش‌فرض استفاده می‌شن)
+        confidence_threshold = await db.get_float_setting("confidence_threshold_fraction", 0.25)
+        atr_sl_mult = await db.get_float_setting("atr_sl_mult", 1.5)
+        rr_targets_raw = await db.get_setting("rr_targets")
+        rr_targets = None
+        if rr_targets_raw:
+            try:
+                rr_targets = [float(x.strip()) for x in rr_targets_raw.split(",")]
+            except ValueError:
+                rr_targets = None
+
+        result = build_single_result(
+            df, symbol, timeframe,
+            confidence_threshold_fraction=confidence_threshold,
+            atr_sl_mult=atr_sl_mult, rr_targets=rr_targets
+        )
 
         try:
             ticker = await client.exchange.fetch_ticker(symbol)
@@ -226,15 +250,18 @@ async def run_single_timeframe_signal(symbol: str, timeframe: str, user_id: int 
 
         await db.log_signal(symbol, result.direction, result.confidence_percent, result.price)
 
+        # به‌جای ثبت خودکار برای پایش، فقط یه رکورد موقت می‌سازیم و از
+        # کاربر با دکمه می‌پرسیم که واقعاً می‌خواد پیگیریش کنه یا نه
+        pending_id = None
         if user_id is not None and result.direction != "NEUTRAL":
-            await db.record_signal_performance(
+            pending_id = await db.create_pending_signal(
                 user_id, symbol, timeframe, result.direction, result.entry, result.sl, result.tps
             )
 
         text = _format_single_result(result, higher_tf_info, btc_corr_info, position_size)
         levels = {"entry": result.entry, "sl": result.sl, "tps": result.tps} if result.direction != "NEUTRAL" else None
         chart_buf = generate_extended_chart(df, symbol, timeframe, levels=levels)
-        keyboard = _result_keyboard(symbol, timeframe)
+        keyboard = _result_keyboard(symbol, timeframe, pending_id=pending_id)
         return text, chart_buf, keyboard
     finally:
         await client.close()

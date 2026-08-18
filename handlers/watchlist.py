@@ -13,9 +13,10 @@ async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     symbol = normalize_symbol(context.args[0])
 
+    max_watchlist = await db.get_int_setting("max_watchlist_per_user", MAX_WATCHLIST_PER_USER)
     count = await db.get_watchlist_count(user_id)
-    if count >= MAX_WATCHLIST_PER_USER:
-        await update.message.reply_text(f"❌ حداکثر {MAX_WATCHLIST_PER_USER} نماد می‌تونی واچ کنی.")
+    if count >= max_watchlist:
+        await update.message.reply_text(f"❌ حداکثر {max_watchlist} نماد می‌تونی واچ کنی.")
         return
 
     client = ExchangeClient()

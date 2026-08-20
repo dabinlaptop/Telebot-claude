@@ -9,7 +9,10 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Type
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import BOT_TOKEN, AUTO_SCAN_INTERVAL, SIGNAL_PERFORMANCE_CHECK_INTERVAL, WEB_PANEL_ENABLED, WEB_PANEL_PORT
+from config import (
+    BOT_TOKEN, AUTO_SCAN_INTERVAL, SIGNAL_PERFORMANCE_CHECK_INTERVAL,
+    WEB_PANEL_ENABLED, WEB_PANEL_PORT, ADMIN_IDS,
+)
 import database as db
 from scheduler import scan_job, check_signal_performance_job
 from handlers.basic import start, help_command
@@ -19,7 +22,9 @@ from handlers.callbacks import callback_router
 from handlers.risk import setrisk_command, myrisk_command, mystats_command, mysignals_command
 from handlers.admin import (
     admin_help_command, block_command, unblock_command, blocklist_command,
-    stats_command, broadcast_command,
+    stats_command, broadcast_command, users_command, finduser_command,
+    whitelist_add_command, whitelist_remove_command, whitelist_list_command,
+    accessmode_command, setwelcome_command, removewelcome_command, getwelcome_command,
 )
 
 logging.basicConfig(
@@ -31,19 +36,39 @@ logger = logging.getLogger(__name__)
 
 async def block_check_handler(update: Update, context):
     """
-    اجرا قبل از هر هندلر دیگه (group=-1). اگه کاربر مسدود باشه، پیام
-    می‌ده و با ApplicationHandlerStop جلوی اجرای بقیه‌ی هندلرها رو
-    می‌گیره - یعنی کاربر مسدود حتی نمی‌تونه /start رو هم اجرا کنه.
+    اجرا قبل از هر هندلر دیگه (group=-1). سه کار می‌کنه:
+    ۱) کاربر رو توی دیتابیس ثبت/بروزرسانی می‌کنه (برای هر تعاملی، نه
+       فقط /start - تا یوزرنیم همیشه تازه باشه)
+    ۲) اگه مسدود باشه، جلوش رو می‌گیره
+    ۳) اگه حالت دسترسی روی «لیست سفید» باشه و کاربر نه ادمینه نه توی
+       لیست سفید، جلوی همه‌چیز رو می‌گیره بجز خود /start (تا حداقل
+       پیام «منتظر تاییدی» رو ببینه و ادمین بفهمه کسی درخواست داده)
     """
     user = update.effective_user
     if user is None:
         return
+
+    await db.add_user(user.id, user.username or user.first_name or str(user.id))
+
     if await db.is_user_blocked(user.id):
         if update.message:
             await update.message.reply_text("🚫 دسترسی شما به این ربات مسدود شده است.")
         elif update.callback_query:
             await update.callback_query.answer("🚫 دسترسی شما مسدود شده است.", show_alert=True)
         raise ApplicationHandlerStop
+
+    is_admin = user.id in ADMIN_IDS
+    access_mode = await db.get_setting("access_mode", "open")
+    if access_mode == "whitelist" and not is_admin:
+        is_command_start = bool(update.message and update.message.text and update.message.text.startswith("/start"))
+        if not is_command_start and not await db.is_whitelisted(user.id):
+            if update.message:
+                await update.message.reply_text(
+                    "⏳ دسترسی شما هنوز توسط ادمین تایید نشده. لطفاً منتظر بمون یا با /start دوباره چک کن."
+                )
+            elif update.callback_query:
+                await update.callback_query.answer("⏳ دسترسی شما هنوز تایید نشده.", show_alert=True)
+            raise ApplicationHandlerStop
 
 
 def build_application() -> Application:
@@ -78,6 +103,15 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("blocklist", blocklist_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("users", users_command))
+    app.add_handler(CommandHandler("finduser", finduser_command))
+    app.add_handler(CommandHandler("whitelist_add", whitelist_add_command))
+    app.add_handler(CommandHandler("whitelist_remove", whitelist_remove_command))
+    app.add_handler(CommandHandler("whitelist", whitelist_list_command))
+    app.add_handler(CommandHandler("accessmode", accessmode_command))
+    app.add_handler(CommandHandler("setwelcome", setwelcome_command))
+    app.add_handler(CommandHandler("removewelcome", removewelcome_command))
+    app.add_handler(CommandHandler("getwelcome", getwelcome_command))
 
     app.add_handler(CallbackQueryHandler(callback_router))
     return app

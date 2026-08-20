@@ -54,6 +54,15 @@ async def init_db():
                 updated_at TEXT
             )
         """)
+        # کاربران تاییدشده برای دسترسی به ربات - وقتی access_mode روی
+        # whitelist باشه، فقط این‌ها (و ادمین‌ها) می‌تونن از ربات استفاده کنن
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS whitelist_users (
+                user_id INTEGER PRIMARY KEY,
+                note TEXT,
+                added_at TEXT
+            )
+        """)
         # پایش عملکرد سیگنال‌های صادرشده از موتور تک‌تایم‌فریمی (برای /mystats)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS signal_performance (
@@ -99,13 +108,23 @@ async def init_db():
         await db.commit()
 
 
-async def add_user(user_id: int, username: str):
+async def add_user(user_id: int, username: str) -> bool:
+    """
+    ثبت کاربر - اگه قبلاً وجود داشته باشه، فقط یوزرنیمش بروزرسانی می‌شه
+    (چون ممکنه کاربر یوزرنیمش رو عوض کرده باشه)، تاریخ عضویت اولیه‌ش
+    دست‌نخورده می‌مونه. خروجی: True اگه این اولین باری بود که این کاربر
+    دیده می‌شد (کاربر تازه)، False اگه از قبل وجود داشت.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+        is_new = await cursor.fetchone() is None
         await db.execute(
-            "INSERT OR IGNORE INTO users (user_id, username, joined_at) VALUES (?, ?, ?)",
+            """INSERT INTO users (user_id, username, joined_at) VALUES (?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET username=excluded.username""",
             (user_id, username, datetime.utcnow().isoformat())
         )
         await db.commit()
+        return is_new
 
 
 async def add_to_watchlist(user_id: int, symbol: str) -> bool:
@@ -484,3 +503,97 @@ async def get_float_setting(key: str, default: float) -> float:
         return float(val) if val is not None else default
     except (ValueError, TypeError):
         return default
+
+
+# ==================== لیست کاربران (برای پنل ادمین) ====================
+
+async def get_users_page(limit: int = 20, offset: int = 0) -> list[dict]:
+    """
+    لیست کاربران به ترتیب جدیدترین اول، به‌همراه وضعیت مسدود/لیست‌سفید
+    (با LEFT JOIN، بدون نیاز به چند کوئری جدا)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """SELECT u.user_id, u.username, u.joined_at, u.auto_scan_enabled,
+                      CASE WHEN b.user_id IS NOT NULL THEN 1 ELSE 0 END AS is_blocked,
+                      CASE WHEN w.user_id IS NOT NULL THEN 1 ELSE 0 END AS is_whitelisted
+               FROM users u
+               LEFT JOIN blocked_users b ON b.user_id = u.user_id
+               LEFT JOIN whitelist_users w ON w.user_id = u.user_id
+               ORDER BY u.joined_at DESC
+               LIMIT ? OFFSET ?""",
+            (limit, offset)
+        )
+        rows = await cursor.fetchall()
+        cols = ["user_id", "username", "joined_at", "auto_scan_enabled", "is_blocked", "is_whitelisted"]
+        return [dict(zip(cols, r)) for r in rows]
+
+
+async def get_user_total_count() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM users")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
+async def find_user(user_id: int) -> dict | None:
+    """پروفایل کامل یه کاربر خاص - برای جستجوی تکی توسط ادمین"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """SELECT u.user_id, u.username, u.joined_at, u.auto_scan_enabled,
+                      CASE WHEN b.user_id IS NOT NULL THEN 1 ELSE 0 END AS is_blocked,
+                      b.reason,
+                      CASE WHEN w.user_id IS NOT NULL THEN 1 ELSE 0 END AS is_whitelisted
+               FROM users u
+               LEFT JOIN blocked_users b ON b.user_id = u.user_id
+               LEFT JOIN whitelist_users w ON w.user_id = u.user_id
+               WHERE u.user_id = ?""",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        cols = ["user_id", "username", "joined_at", "auto_scan_enabled", "is_blocked", "block_reason", "is_whitelisted"]
+        profile = dict(zip(cols, row))
+        profile["watchlist_count"] = await get_watchlist_count(user_id)
+        return profile
+
+
+# ==================== لیست سفید (whitelist) ====================
+
+async def add_to_whitelist(user_id: int, note: str = ""):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO whitelist_users (user_id, note, added_at) VALUES (?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET note=excluded.note""",
+            (user_id, note, datetime.utcnow().isoformat())
+        )
+        await db.commit()
+
+
+async def remove_from_whitelist(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT 1 FROM whitelist_users WHERE user_id = ?", (user_id,))
+        existed = await cursor.fetchone() is not None
+        await db.execute("DELETE FROM whitelist_users WHERE user_id = ?", (user_id,))
+        await db.commit()
+        return existed
+
+
+async def is_whitelisted(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT 1 FROM whitelist_users WHERE user_id = ?", (user_id,))
+        return await cursor.fetchone() is not None
+
+
+async def get_whitelist() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """SELECT w.user_id, u.username, w.note, w.added_at
+               FROM whitelist_users w
+               LEFT JOIN users u ON u.user_id = w.user_id
+               ORDER BY w.added_at DESC"""
+        )
+        rows = await cursor.fetchall()
+        cols = ["user_id", "username", "note", "added_at"]
+        return [dict(zip(cols, r)) for r in rows]

@@ -70,7 +70,8 @@ def layout(title: str, body: str) -> str:
 <h1>🤖 پنل مدیریت ربات سیگنال</h1>
 <div>
   <a class="nav" href="/">📊 داشبورد</a>
-  <a class="nav" href="/blocked">🚫 کاربران مسدود</a>
+  <a class="nav" href="/users">👥 کاربران</a>
+  <a class="nav" href="/blocked">🚫 مسدودها</a>
   <a class="nav" href="/settings">⚙️ تنظیمات</a>
   <a class="nav" href="/broadcast">📢 پیام همگانی</a>
 </div>
@@ -82,6 +83,8 @@ def layout(title: str, body: str) -> str:
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(user: str = Depends(verify_auth)):
     stats = await db.get_bot_stats()
+    access_mode = await db.get_setting("access_mode", "open")
+    mode_badge = "🔒 لیست سفید" if access_mode == "whitelist" else "🌐 باز برای همه"
     body = f"""
     <div class="card">
       <h3>آمار کلی</h3>
@@ -90,6 +93,7 @@ async def dashboard(user: str = Depends(verify_auth)):
       <div class="stat">⭐ آیتم واچ‌لیست: <b>{stats['total_watchlist']}</b></div>
       <div class="stat">🚫 کاربر مسدود: <b>{stats['total_blocked']}</b></div>
       <div class="stat">📈 سیگنال امروز: <b>{stats['signals_today']}</b></div>
+      <div class="stat">حالت دسترسی: <b>{mode_badge}</b></div>
     </div>
     <div class="card hint">
       این پنل مستقیماً به همون دیتابیس ربات وصله. هر تغییری این‌جا بدی
@@ -97,6 +101,76 @@ async def dashboard(user: str = Depends(verify_auth)):
     </div>
     """
     return layout("داشبورد", body)
+
+
+PAGE_SIZE = 20
+
+
+@app.get("/users", response_class=HTMLResponse)
+async def users_page(user: str = Depends(verify_auth), page: int = 1):
+    page = max(1, page)
+    total = await db.get_user_total_count()
+    offset = (page - 1) * PAGE_SIZE
+    users = await db.get_users_page(limit=PAGE_SIZE, offset=offset)
+
+    rows = ""
+    for u in users:
+        badges = ""
+        if u["is_blocked"]:
+            badges += "<span style='color:#ef4444'>🚫 مسدود</span> "
+        if u["is_whitelisted"]:
+            badges += "<span style='color:#22c55e'>✅ لیست‌سفید</span>"
+        uname = u["username"] or "بدون‌نام"
+
+        if u["is_whitelisted"]:
+            wl_form = f"""<form method='post' action='/users/unwhitelist' style='margin:0'>
+                <input type='hidden' name='user_id' value='{u["user_id"]}'>
+                <button class='danger' type='submit'>حذف از لیست سفید</button></form>"""
+        else:
+            wl_form = f"""<form method='post' action='/users/whitelist' style='margin:0'>
+                <input type='hidden' name='user_id' value='{u["user_id"]}'>
+                <button type='submit'>افزودن به لیست سفید</button></form>"""
+
+        rows += (
+            f"<tr><td>{u['user_id']}</td><td>{uname}</td><td>{u['joined_at'][:10]}</td>"
+            f"<td>{badges or '-'}</td><td>{wl_form}</td></tr>"
+        )
+
+    if not rows:
+        rows = "<tr><td colspan='5' class='hint'>کاربری پیدا نشد.</td></tr>"
+
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    nav = ""
+    if page > 1:
+        nav += f"<a class='nav' href='/users?page={page-1}'>« قبلی</a>"
+    if page < total_pages:
+        nav += f"<a class='nav' href='/users?page={page+1}'>بعدی »</a>"
+
+    body = f"""
+    <div class="card">
+      <h3>کاربرانی که ربات رو استارت کردن ({total})</h3>
+      <p class="hint">صفحه {page} از {total_pages}</p>
+      <table><tr><th>شناسه</th><th>یوزرنیم/نام</th><th>تاریخ عضویت</th><th>وضعیت</th><th></th></tr>{rows}</table>
+      <div style="margin-top:12px">{nav}</div>
+    </div>
+    """
+    return layout("کاربران", body)
+
+
+@app.post("/users/whitelist")
+async def whitelist_user_web(user_id: str = Form(...), user: str = Depends(verify_auth)):
+    cleaned = user_id.strip()
+    if cleaned.lstrip("-").isdigit():
+        await db.add_to_whitelist(int(cleaned), "از پنل وب")
+    return RedirectResponse("/users", status_code=303)
+
+
+@app.post("/users/unwhitelist")
+async def unwhitelist_user_web(user_id: str = Form(...), user: str = Depends(verify_auth)):
+    cleaned = user_id.strip()
+    if cleaned.lstrip("-").isdigit():
+        await db.remove_from_whitelist(int(cleaned))
+    return RedirectResponse("/users", status_code=303)
 
 
 @app.get("/blocked", response_class=HTMLResponse)
@@ -173,7 +247,41 @@ async def settings_page(user: str = Depends(verify_auth)):
           </form>
         </div>
         """
+
+    access_mode = current.get("access_mode", "open")
+    open_checked = "checked" if access_mode == "open" else ""
+    wl_checked = "checked" if access_mode == "whitelist" else ""
+
+    welcome_msg = current.get("custom_welcome_message", "")
+
     body = f"""
+    <div class="card">
+      <h3>🔒 کنترل دسترسی</h3>
+      <p class="hint">
+        در حالت «باز»، هر کسی می‌تونه از ربات استفاده کنه (مگر مسدودشده‌ها).
+        در حالت «لیست سفید»، فقط کاربرانی که تاییدشون کردی دسترسی دارن؛
+        بقیه فقط پیام «منتظر تایید» می‌گیرن. مدیریت لیست سفید از صفحه‌ی
+        <a class="nav" href="/users">کاربران</a> انجام می‌شه.
+      </p>
+      <form method="post" action="/settings/access-mode">
+        <label><input type="radio" name="mode" value="open" {open_checked}> باز برای همه</label><br>
+        <label><input type="radio" name="mode" value="whitelist" {wl_checked}> فقط لیست سفید</label><br><br>
+        <button type="submit">ذخیره حالت دسترسی</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h3>👋 پیام خوش‌آمدگویی سفارشی</h3>
+      <p class="hint">این پیام، قبل از راهنمای استاندارد، به هر کسی که /start بزنه نشون داده می‌شه.</p>
+      <form method="post" action="/settings/welcome">
+        <textarea name="message" rows="3" placeholder="مثلاً: به کانال ما هم سر بزن...">{welcome_msg}</textarea>
+        <button type="submit">ذخیره پیام</button>
+      </form>
+      <form method="post" action="/settings/welcome/delete" style="margin-top:8px">
+        <button class="danger" type="submit">حذف پیام سفارشی (برگشت به پیش‌فرض)</button>
+      </form>
+    </div>
+
     <div class="card">
       <h3>تنظیمات موتور سیگنال</h3>
       <p class="hint">این‌ها بدون نیاز به ری‌دیپلوی، بلافاصله روی تحلیل‌های بعدی اثر می‌ذارن.</p>
@@ -188,6 +296,25 @@ async def update_setting_web(key: str = Form(...), value: str = Form(...), user:
     valid_keys = {k for k, _, _, _ in SETTINGS_SCHEMA}
     if key in valid_keys:
         await db.set_setting(key, value.strip())
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/access-mode")
+async def update_access_mode_web(mode: str = Form(...), user: str = Depends(verify_auth)):
+    if mode in ("open", "whitelist"):
+        await db.set_setting("access_mode", mode)
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/welcome")
+async def update_welcome_web(message: str = Form(...), user: str = Depends(verify_auth)):
+    await db.set_setting("custom_welcome_message", message.strip())
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/welcome/delete")
+async def delete_welcome_web(user: str = Depends(verify_auth)):
+    await db.set_setting("custom_welcome_message", "")
     return RedirectResponse("/settings", status_code=303)
 
 

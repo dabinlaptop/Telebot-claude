@@ -1,5 +1,6 @@
 from telegram import Update
 from telegram.ext import ContextTypes
+from config import ADMIN_IDS
 import database as db
 
 WELCOME_TEXT = """
@@ -37,11 +38,27 @@ WELCOME_TEXT = """
 ⚠️ این ربات صرفاً یک ابزار تحلیل تکنیکاله و توصیه‌ی مالی نیست.
 """
 
+PENDING_APPROVAL_TEXT = """
+⏳ *سلام! درخواست دسترسی‌ت ثبت شد.*
+
+این ربات فعلاً فقط برای کاربران تاییدشده در دسترسه. ادمین باید دسترسیت
+رو تایید کنه؛ بعدش می‌تونی از همه‌ی امکانات استفاده کنی.
+
+اگه فکر می‌کنی باید بهت دسترسی داده بشه، با ادمین ربات هماهنگ کن.
+"""
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await db.add_user(user.id, user.username or user.first_name)
-    await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
+
+    access_mode = await db.get_setting("access_mode", "open")
+    if access_mode == "whitelist" and user.id not in ADMIN_IDS and not await db.is_whitelisted(user.id):
+        await update.message.reply_text(PENDING_APPROVAL_TEXT, parse_mode="Markdown")
+        return
+
+    custom_message = await db.get_setting("custom_welcome_message", "")
+    text = f"📢 {custom_message}\n\n{WELCOME_TEXT}" if custom_message else WELCOME_TEXT
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

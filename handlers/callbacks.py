@@ -75,6 +75,52 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("ℹ️ این سیگنال قبلاً حذف شده یا مال تو نیست.")
 
+    elif action == "approve_access" and len(parts) == 2:
+        await _handle_access_decision(query, context, int(parts[1]), approve=True)
+
+    elif action == "reject_access" and len(parts) == 2:
+        await _handle_access_decision(query, context, int(parts[1]), approve=False)
+
+
+async def _handle_access_decision(query, context, target_user_id: int, approve: bool):
+    """
+    ادمین با دکمه‌ی زیر نوتیفیکیشنِ درخواست دسترسی، تایید/رد کرده.
+    توجه: query.answer() همین الان توی callback_router بالاتر صدا زده
+    شده (تلگرام هر callback رو فقط یه‌بار میشه answer کرد)، پس اینجا
+    دوباره answer نمی‌زنیم و فقط از edit/send_message برای فیدبک استفاده می‌کنیم.
+    """
+    from config import ADMIN_IDS
+    if query.from_user.id not in ADMIN_IDS:
+        return
+
+    await db.delete_access_request(target_user_id)
+
+    if approve:
+        await db.add_to_whitelist(target_user_id, "تایید شده از دکمه‌ی نوتیفیکیشن")
+        try:
+            await query.edit_message_text(query.message.text + "\n\n✅ تایید شد.")
+        except Exception:
+            pass
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text="✅ دسترسیت تایید شد! برای شروع دوباره /start رو بزن."
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            await query.edit_message_text(query.message.text + "\n\n❌ رد شد.")
+        except Exception:
+            pass
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text="متاسفانه درخواست دسترسیت در حال حاضر تایید نشد."
+            )
+        except Exception:
+            pass
+
 
 async def _handle_track_decision(query, pending_id: int, confirm: bool):
     """کاربر با دکمه‌ی 📌/❌ تصمیمش رو درباره‌ی پیگیری یه سیگنال اعلام کرده"""

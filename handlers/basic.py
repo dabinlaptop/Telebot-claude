@@ -50,13 +50,24 @@ PENDING_APPROVAL_TEXT = """
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    custom_message = await db.get_setting("custom_welcome_message", "")
 
     access_mode = await db.get_setting("access_mode", "open")
-    if access_mode == "whitelist" and user.id not in ADMIN_IDS and not await db.is_whitelisted(user.id):
-        await update.message.reply_text(PENDING_APPROVAL_TEXT, parse_mode="Markdown")
+    is_pending = (
+        access_mode == "whitelist"
+        and user.id not in ADMIN_IDS
+        and not await db.is_whitelisted(user.id)
+    )
+
+    if is_pending:
+        # کاربرِ منتظرِ تایید فقط پیام خوش‌آمدگویی سفارشی (اگه ادمین
+        # تنظیم کرده باشه) رو می‌بینه، نه لیست کامل دستورات - چون هنوز
+        # دسترسی نداره. اگه ادمین پیامی تنظیم نکرده، از متن پیش‌فرض
+        # «منتظر تایید» استفاده می‌شه.
+        text = custom_message if custom_message else PENDING_APPROVAL_TEXT
+        await update.message.reply_text(text, parse_mode="Markdown")
         return
 
-    custom_message = await db.get_setting("custom_welcome_message", "")
     text = f"📢 {custom_message}\n\n{WELCOME_TEXT}" if custom_message else WELCOME_TEXT
     await update.message.reply_text(text, parse_mode="Markdown")
 

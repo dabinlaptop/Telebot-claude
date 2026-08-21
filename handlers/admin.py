@@ -339,6 +339,37 @@ async def getwelcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(f"پیام فعلی:\n\n{current}")
 
 
+# ---------- نوتیفیکیشن خودکار به ادمین‌ها هنگام درخواست دسترسی جدید ----------
+
+async def notify_admins_of_access_request(context: ContextTypes.DEFAULT_TYPE, user) -> None:
+    """
+    وقتی کاربری که whitelist نیست /start می‌زنه (توی حالت دسترسی
+    whitelist)، این تابع به همه‌ی ادمین‌ها یه پیام با دکمه‌ی تایید/رد
+    می‌فرسته - تا لازم نباشه ادمین دستی بره /users رو چک کنه.
+    """
+    if not ADMIN_IDS:
+        return
+
+    uname = user.username or user.first_name or "بدون‌نام"
+    text = (
+        f"🔔 *درخواست دسترسی جدید*\n\n"
+        f"شناسه: `{user.id}`\n"
+        f"نام/یوزرنیم: {uname}\n\n"
+        f"می‌خوای دسترسی بدی؟"
+    )
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ تایید کن", callback_data=f"approve_access:{user.id}"),
+        InlineKeyboardButton("❌ رد کن", callback_data=f"reject_access:{user.id}"),
+    ]])
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+        except Exception as e:
+            logger.warning(f"ارسال نوتیفیکیشن درخواست دسترسی به ادمین {admin_id} ناموفق بود: {e}")
+
+
 # ---------- بررسی مسدودبودن (برای هندلر سراسری در bot.py) ----------
 
 async def is_blocked(user_id: int) -> bool:

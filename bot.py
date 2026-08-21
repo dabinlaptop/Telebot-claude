@@ -25,6 +25,7 @@ from handlers.admin import (
     stats_command, broadcast_command, users_command, finduser_command,
     whitelist_add_command, whitelist_remove_command, whitelist_list_command,
     accessmode_command, setwelcome_command, removewelcome_command, getwelcome_command,
+    notify_admins_of_access_request,
 )
 
 logging.basicConfig(
@@ -61,7 +62,16 @@ async def block_check_handler(update: Update, context):
     access_mode = await db.get_setting("access_mode", "open")
     if access_mode == "whitelist" and not is_admin:
         is_command_start = bool(update.message and update.message.text and update.message.text.startswith("/start"))
-        if not is_command_start and not await db.is_whitelisted(user.id):
+        user_whitelisted = await db.is_whitelisted(user.id)
+
+        if is_command_start and not user_whitelisted:
+            # کاربر تازه داره درخواست دسترسی می‌ده - فقط بار اول به
+            # ادمین‌ها اطلاع بده (نه هر بار که دوباره /start می‌زنه)
+            is_new_request = await db.create_access_request(user.id)
+            if is_new_request:
+                await notify_admins_of_access_request(context, user)
+            # اجازه می‌دیم درخواست به خود start() برسه تا پیام خوش‌آمد/انتظار رو نشون بده
+        elif not user_whitelisted:
             if update.message:
                 await update.message.reply_text(
                     "⏳ دسترسی شما هنوز توسط ادمین تایید نشده. لطفاً منتظر بمون یا با /start دوباره چک کن."

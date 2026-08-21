@@ -63,6 +63,23 @@ async def init_db():
                 added_at TEXT
             )
         """)
+        # درخواست‌های دسترسی در انتظار تصمیم ادمین - برای جلوگیری از
+        # نوتیفیکیشن تکراری وقتی یه کاربر چندبار /start رو می‌زنه
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS access_requests (
+                user_id INTEGER PRIMARY KEY,
+                requested_at TEXT
+            )
+        """)
+        # درخواست‌های دسترسی در انتظار تایید ادمین - برای جلوگیری از
+        # اسپم نوتیفیکیشن (هر کاربر فقط یه‌بار توی این جدول ثبت می‌شه،
+        # حتی اگه چندبار /start بزنه، تا وقتی تایید/رد بشه)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS access_requests (
+                user_id INTEGER PRIMARY KEY,
+                requested_at TEXT
+            )
+        """)
         # پایش عملکرد سیگنال‌های صادرشده از موتور تک‌تایم‌فریمی (برای /mystats)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS signal_performance (
@@ -596,4 +613,44 @@ async def get_whitelist() -> list[dict]:
         )
         rows = await cursor.fetchall()
         cols = ["user_id", "username", "note", "added_at"]
+        return [dict(zip(cols, r)) for r in rows]
+
+
+# ==================== درخواست‌های دسترسی در انتظار (برای نوتیفیکیشن ادمین) ====================
+
+async def create_access_request(user_id: int) -> bool:
+    """
+    ثبت درخواست دسترسی. خروجی True یعنی این اولین باریه که این کاربر
+    درخواست داده (پس باید به ادمین اطلاع بدیم)؛ False یعنی قبلاً درخواست
+    داده بود (چندبار /start زده) - نباید دوباره نوتیفای کنیم.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT 1 FROM access_requests WHERE user_id = ?", (user_id,))
+        already_exists = await cursor.fetchone() is not None
+        if already_exists:
+            return False
+        await db.execute(
+            "INSERT INTO access_requests (user_id, requested_at) VALUES (?, ?)",
+            (user_id, datetime.utcnow().isoformat())
+        )
+        await db.commit()
+        return True
+
+
+async def delete_access_request(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM access_requests WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+
+async def get_access_requests() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """SELECT a.user_id, u.username, a.requested_at
+               FROM access_requests a
+               LEFT JOIN users u ON u.user_id = a.user_id
+               ORDER BY a.requested_at ASC"""
+        )
+        rows = await cursor.fetchall()
+        cols = ["user_id", "username", "requested_at"]
         return [dict(zip(cols, r)) for r in rows]

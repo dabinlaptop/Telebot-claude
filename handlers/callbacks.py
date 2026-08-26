@@ -31,6 +31,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text is None:
             await query.edit_message_text(f"❌ نماد `{symbol}` پیدا نشد.", parse_mode=ParseMode.MARKDOWN)
             return
+        if chart_buf is None:
+            # حالت «داده‌ی تاریخی ناکافی» - فقط متن هشدار، بدون نمودار
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=_timeframe_keyboard(symbol))
+            return
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
         await query.message.reply_photo(photo=chart_buf)
 

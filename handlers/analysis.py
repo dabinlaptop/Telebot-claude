@@ -5,7 +5,7 @@ from exchange import ExchangeClient, normalize_symbol
 from signals import analyze_symbol, SIGNAL_EMOJI, SIGNAL_FA
 from single_analysis import (
     add_extended_indicators, build_single_result, TIMEFRAME_LABELS_FA,
-    MIN_CANDLES_FOR_ANALYSIS
+    MIN_CANDLES_FOR_ANALYSIS, MIN_CANDLES_REQUIRED
 )
 from charts import generate_extended_chart
 from market_context import check_higher_timeframe_alignment, check_btc_correlation
@@ -17,12 +17,20 @@ import database as db
 def _timeframe_keyboard(symbol: str) -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton("۱۵ دقیقه", callback_data=f"tf:{symbol}:15m"),
-            InlineKeyboardButton("۱ ساعته", callback_data=f"tf:{symbol}:1h"),
+            InlineKeyboardButton("۱ دقیقه", callback_data=f"tf:{symbol}:1m"),
+            InlineKeyboardButton("۵ دقیقه", callback_data=f"tf:{symbol}:5m"),
         ],
         [
+            InlineKeyboardButton("۱۵ دقیقه", callback_data=f"tf:{symbol}:15m"),
+            InlineKeyboardButton("۳۰ دقیقه", callback_data=f"tf:{symbol}:30m"),
+        ],
+        [
+            InlineKeyboardButton("۱ ساعته", callback_data=f"tf:{symbol}:1h"),
             InlineKeyboardButton("۴ ساعته", callback_data=f"tf:{symbol}:4h"),
+        ],
+        [
             InlineKeyboardButton("روزانه", callback_data=f"tf:{symbol}:1d"),
+            InlineKeyboardButton("هفتگی", callback_data=f"tf:{symbol}:1w"),
         ],
     ]
     return InlineKeyboardMarkup(buttons)
@@ -196,7 +204,11 @@ def _format_single_result(result, higher_tf_info: dict = None, btc_corr_info: di
 
 async def run_single_timeframe_signal(symbol: str, timeframe: str, user_id: int = None):
     """
-    خروجی: (متن پیام, بافر تصویر نمودار, کیبورد) یا (None, None, None) اگه نماد نامعتبر بود
+    خروجی: (متن پیام, بافر تصویر نمودار, کیبورد)
+    اگه نماد نامعتبر بود: (None, None, None)
+    اگه نماد معتبر بود ولی داده‌ی تاریخی کافی نداشت (مثلاً یه کوین تازه
+    روی تایم‌فریم هفتگی): (متن هشدار, None, None) - یعنی chart_buf رو
+    نساز و نفرست، چون بر پایه‌ی اندیکاتورهای ناقص گمراه‌کننده می‌شه
     """
     client = ExchangeClient()
     try:
@@ -204,6 +216,16 @@ async def run_single_timeframe_signal(symbol: str, timeframe: str, user_id: int 
             return None, None, None
 
         df = await client.fetch_ohlcv_df(symbol, timeframe, limit=MIN_CANDLES_FOR_ANALYSIS)
+
+        if len(df) < MIN_CANDLES_REQUIRED:
+            tf_label = TIMEFRAME_LABELS_FA.get(timeframe, timeframe)
+            warn_text = (
+                f"⚠️ برای `{symbol}` روی تایم‌فریم {tf_label} فقط {len(df)} کندل تاریخچه "
+                f"در دسترسه (حداقل {MIN_CANDLES_REQUIRED} تا لازمه تا اندیکاتورها معتبر باشن).\n\n"
+                f"یه تایم‌فریم کوچیک‌تر امتحان کن یا از «⏱ تغییر تایم‌فریم» استفاده کن."
+            )
+            return warn_text, None, None
+
         df = add_extended_indicators(df)
 
         # تنظیمات قابل تغییر از پنل وب (اگه ادمین چیزی تغییر نداده باشه، مقادیر پیش‌فرض استفاده می‌شن)

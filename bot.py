@@ -20,6 +20,7 @@ from handlers.analysis import signal_command, chart_command, price_command, top_
 from handlers.watchlist import watch_command, unwatch_command, mywatchlist_command, autoscan_command
 from handlers.callbacks import callback_router
 from handlers.risk import setrisk_command, myrisk_command, mystats_command, mysignals_command
+from handlers.backtest import backtest_command
 from handlers.admin import (
     admin_help_command, block_command, unblock_command, blocklist_command,
     stats_command, broadcast_command, users_command, finduser_command,
@@ -105,6 +106,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("myrisk", myrisk_command))
     app.add_handler(CommandHandler("mystats", mystats_command))
     app.add_handler(CommandHandler("mysignals", mysignals_command))
+    app.add_handler(CommandHandler("backtest", backtest_command))
 
     # دستورات ادمین (خودشون داخلاً چک می‌کنن کاربر ادمینه یا نه)
     app.add_handler(CommandHandler("admin", admin_help_command))

@@ -165,3 +165,53 @@ def generate_extended_chart(
     plt.close(fig)
     buf.seek(0)
     return buf
+
+
+def generate_backtest_chart(trades: list, symbol: str, timeframe: str) -> io.BytesIO:
+    """
+    نمودار منحنی تجمعی R-multiple (Equity Curve) بک‌تست - نشون می‌ده
+    اگه هر معامله دقیقاً ۱ واحد ریسک (مثلاً ۱٪ حساب) بود، سرمایه‌ی فرضی
+    (بر حسب واحد R) در طول زمان چطور تغییر می‌کرد.
+    """
+    resolved = [t for t in trades if t.exit_reason != "STILL_OPEN"]
+
+    fig, (ax_equity, ax_bars) = plt.subplots(
+        2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [2, 1]}
+    )
+    fig.patch.set_facecolor(BG_COLOR)
+    for ax in (ax_equity, ax_bars):
+        ax.set_facecolor(BG_COLOR)
+        ax.tick_params(colors=TEXT_COLOR, labelsize=8)
+        ax.grid(True, color=GRID_COLOR, linewidth=0.5, alpha=0.5)
+        for spine in ax.spines.values():
+            spine.set_color(GRID_COLOR)
+
+    if not resolved:
+        ax_equity.text(0.5, 0.5, "No trades found", color=TEXT_COLOR,
+                        ha="center", va="center", transform=ax_equity.transAxes, fontsize=12)
+    else:
+        cumulative = []
+        total = 0.0
+        for t in resolved:
+            total += t.r_multiple
+            cumulative.append(total)
+
+        trade_numbers = list(range(1, len(resolved) + 1))
+        line_color = UP_COLOR if cumulative[-1] >= 0 else DOWN_COLOR
+        ax_equity.plot(trade_numbers, cumulative, color=line_color, linewidth=1.8, marker="o", markersize=3)
+        ax_equity.axhline(0, color=TEXT_COLOR, linewidth=0.6, linestyle="--", alpha=0.5)
+        ax_equity.set_title(f"{symbol} — {timeframe} — Backtest Equity Curve (Cumulative R)", color="white", fontsize=12, fontweight="bold")
+        ax_equity.set_ylabel("Cumulative R", color=TEXT_COLOR, fontsize=9)
+
+        bar_colors = [UP_COLOR if t.r_multiple > 0 else DOWN_COLOR for t in resolved]
+        ax_bars.bar(trade_numbers, [t.r_multiple for t in resolved], color=bar_colors)
+        ax_bars.axhline(0, color=TEXT_COLOR, linewidth=0.6, alpha=0.5)
+        ax_bars.set_ylabel("R per trade", color=TEXT_COLOR, fontsize=9)
+        ax_bars.set_xlabel("Trade #", color=TEXT_COLOR, fontsize=9)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=140, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf

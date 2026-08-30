@@ -75,6 +75,34 @@ class ExchangeClient:
         losers = sorted(usdt_pairs, key=lambda x: x["change"])[:top_n]
         return {"gainers": gainers, "losers": losers}
 
+    async def fetch_order_book_imbalance(self, symbol: str, depth: int = 20) -> dict | None:
+        """
+        فشار خرید/فروش لحظه‌ای رو از روی عمق اردربوک (نه کندل تاریخی)
+        می‌سنجه - مجموع حجم سفارش‌های خرید (bid) در برابر فروش (ask) توی
+        N سطح قیمتی بالای اردربوک. این کاملاً مستقل از اندیکاتورهای
+        کندلی‌ه، پس زمینه‌ی تازه‌ای اضافه می‌کنه.
+        خروجی: {"bid_ratio": float 0..1, "pressure": "buy"|"sell"|"neutral"}
+        یا None اگه صرافی اردربوک رو پشتیبانی نکنه یا خطا بده.
+        """
+        try:
+            book = await self.exchange.fetch_order_book(symbol, limit=depth)
+        except Exception:
+            return None
+
+        bids = book.get("bids") or []
+        asks = book.get("asks") or []
+        if not bids or not asks:
+            return None
+
+        bid_volume = sum(vol for _, vol in bids[:depth])
+        ask_volume = sum(vol for _, vol in asks[:depth])
+        total = bid_volume + ask_volume
+        if total <= 0:
+            return None
+
+        bid_ratio = bid_volume / total
+        return {"bid_ratio": bid_ratio, "bid_volume": bid_volume, "ask_volume": ask_volume}
+
 
 def normalize_symbol(user_input: str) -> str:
     """

@@ -352,7 +352,7 @@ async def get_open_signal_performances(limit: int = 200) -> list[dict]:
         cursor = await db.execute(
             """SELECT id, user_id, symbol, timeframe, direction, entry, sl, tp1, tp2, tp3, status
                FROM signal_performance
-               WHERE status NOT IN ('TP3_HIT', 'SL_HIT')
+               WHERE status NOT IN ('TP3_HIT', 'SL_HIT', 'BREAKEVEN_HIT')
                ORDER BY id ASC LIMIT ?""",
             (limit,)
         )
@@ -362,7 +362,7 @@ async def get_open_signal_performances(limit: int = 200) -> list[dict]:
 
 
 async def close_signal_performance(perf_id: int, status: str):
-    """برای وضعیت‌های نهایی (TP3_HIT یا SL_HIT) - closed_at رو هم ثبت می‌کنه"""
+    """برای وضعیت‌های نهایی (TP3_HIT یا SL_HIT یا BREAKEVEN_HIT) - closed_at رو هم ثبت می‌کنه"""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE signal_performance SET status = ?, closed_at = ? WHERE id = ?",
@@ -381,6 +381,20 @@ async def update_signal_status(perf_id: int, status: str):
         await db.commit()
 
 
+async def move_sl_to_breakeven(perf_id: int, entry: float):
+    """
+    بعد از رسیدن به TP1، حد ضرر رو به نقطه‌ی ورود (سربه‌سر) منتقل می‌کنه
+    تا ریسک این معامله از این لحظه به بعد صفر بشه. خود ستون status
+    دست‌نخورده می‌مونه (همون TP1_HIT)؛ فقط sl تغییر می‌کنه.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE signal_performance SET sl = ? WHERE id = ?",
+            (entry, perf_id)
+        )
+        await db.commit()
+
+
 async def get_user_performance_stats(user_id: int) -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -391,11 +405,12 @@ async def get_user_performance_stats(user_id: int) -> dict:
         counts = {status: count for status, count in rows}
         wins = counts.get("TP1_HIT", 0) + counts.get("TP2_HIT", 0) + counts.get("TP3_HIT", 0)
         losses = counts.get("SL_HIT", 0)
+        breakeven = counts.get("BREAKEVEN_HIT", 0)
         open_count = counts.get("OPEN", 0)
-        closed = wins + losses
+        closed = wins + losses  # سربه‌سر نه برده حساب می‌شه نه باخته، پس توی نرخ برد نمیاد
         win_rate = (wins / closed * 100) if closed > 0 else None
         return {
-            "wins": wins, "losses": losses, "open": open_count,
+            "wins": wins, "losses": losses, "breakeven": breakeven, "open": open_count,
             "closed": closed, "win_rate": win_rate, "breakdown": counts,
         }
 
@@ -406,7 +421,7 @@ async def get_user_open_signals(user_id: int) -> list[dict]:
         cursor = await db.execute(
             """SELECT id, symbol, timeframe, direction, entry, sl, tp1, tp2, tp3, status, created_at
                FROM signal_performance
-               WHERE user_id = ? AND status NOT IN ('TP3_HIT', 'SL_HIT')
+               WHERE user_id = ? AND status NOT IN ('TP3_HIT', 'SL_HIT', 'BREAKEVEN_HIT')
                ORDER BY id DESC""",
             (user_id,)
         )

@@ -124,6 +124,12 @@ def generate_extended_chart(
         for i, tp in enumerate(levels.get("tps") or [], start=1):
             _draw_level_line(ax_price, x_end, x_margin_end, tp, "#22c55e", f"TP{i}")
 
+    # --- سطوح فیبوناچی رتریسمنت (نازک و کم‌رنگ، فقط برای زمینه) ---
+    if levels and levels.get("fib_levels"):
+        for fib_ratio, fib_price in levels["fib_levels"].items():
+            ax_price.axhline(fib_price, color="#c084fc", linewidth=0.5, linestyle=":", alpha=0.45, zorder=1)
+            ax_price.text(x_start, fib_price, f" fib {fib_ratio:.3f} ", color="#c084fc", fontsize=6, va="bottom", ha="left", alpha=0.8)
+
     ax_price.set_title(f"{symbol} — {timeframe}", color="white", fontsize=13, fontweight="bold", pad=12)
     legend = ax_price.legend(
         loc="upper left", fontsize=7.5, facecolor=BG_COLOR, labelcolor="white",

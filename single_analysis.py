@@ -230,6 +230,57 @@ def _suggest_entry(price: float, atr: float, direction: str, ema12: float) -> tu
 
 # ---------- محاسبه‌ی سطوح ورود/حد ضرر/تارگت ----------
 
+# ---------- فیبوناچی (تاییدکننده‌ی SL/ورود) ----------
+
+def _calc_fibonacci_confirmation(swing_low: float, swing_high: float, price_to_check: float,
+                                  atr: float) -> str | None:
+    """
+    اگه یه قیمت مشخص (مثلاً SL یا نقطه‌ی ورود) نزدیک یکی از سطوح
+    فیبوناچی رتریسمنت (بر پایه‌ی آخرین Swing) باشه، یه متن تاییدکننده
+    برمی‌گردونه؛ وگرنه None. این صرفاً جنبه‌ی اطلاعاتیه، توی امتیازدهی
+    دخالت نداره - فقط اعتبار بیشتری به سطح محاسبه‌شده می‌ده.
+    """
+    from config import FIBONACCI_LEVELS, FIBONACCI_TOLERANCE_ATR_MULT
+
+    diff = swing_high - swing_low
+    if diff <= 0 or atr <= 0:
+        return None
+
+    tolerance = FIBONACCI_TOLERANCE_ATR_MULT * atr
+    for level in FIBONACCI_LEVELS:
+        fib_price = swing_high - diff * level
+        if abs(price_to_check - fib_price) <= tolerance:
+            return f"نزدیک سطح فیبوناچی {level:.3f} (${fib_price:,.4f})"
+    return None
+
+
+# ---------- تشخیص رژیم نوسان (بر پایه‌ی صدک ATR) ----------
+
+def _detect_volatility_regime(df: pd.DataFrame) -> dict:
+    """
+    ATR فعلی رو نسبت به تاریخچه‌ی خودش (نه یه عدد مطلق) می‌سنجه - چون
+    نوسان «بالا» برای BTC و یه شیت‌کوین کوچیک کاملاً متفاوته. خروجی:
+    سطح (کم/عادی/بالا/شدید) + درصد صدک + ضریب پیشنهادی کاهش حجم پوزیشن.
+    """
+    from config import (
+        VOLATILITY_LOOKBACK, VOLATILITY_HIGH_PERCENTILE, VOLATILITY_EXTREME_PERCENTILE,
+        VOLATILITY_HIGH_RISK_MULT, VOLATILITY_EXTREME_RISK_MULT,
+    )
+
+    atr_series = df["atr"].tail(VOLATILITY_LOOKBACK).dropna()
+    if len(atr_series) < 20:
+        return {"level": "نامشخص", "percentile": None, "risk_mult": 1.0}
+
+    current_atr = atr_series.iloc[-1]
+    percentile = float((atr_series < current_atr).mean() * 100)
+
+    if percentile >= VOLATILITY_EXTREME_PERCENTILE:
+        return {"level": "شدید 🔥", "percentile": percentile, "risk_mult": VOLATILITY_EXTREME_RISK_MULT}
+    if percentile >= VOLATILITY_HIGH_PERCENTILE:
+        return {"level": "بالا ⚠️", "percentile": percentile, "risk_mult": VOLATILITY_HIGH_RISK_MULT}
+    return {"level": "عادی", "percentile": percentile, "risk_mult": 1.0}
+
+
 def _calc_levels(df: pd.DataFrame, price: float, atr: float, direction: str, ema12: float,
                   atr_sl_mult: float = None, rr_targets: list = None) -> dict:
     """
@@ -274,9 +325,14 @@ def _calc_levels(df: pd.DataFrame, price: float, atr: float, direction: str, ema
     else:
         entry, entry_basis, sl, sl_basis, tps, risk = price, None, None, None, [], None
 
+    fib_confirmation = None
+    if sl is not None:
+        fib_confirmation = _calc_fibonacci_confirmation(swing_low, swing_high, sl, atr)
+
     return {
         "entry": entry, "entry_basis": entry_basis, "sl": sl, "sl_basis": sl_basis,
         "tps": tps, "risk": risk, "support": swing_low, "resistance": swing_high,
+        "fib_confirmation": fib_confirmation,
     }
 
 
@@ -312,6 +368,12 @@ class SingleTFResult:
     quote_volume_24h: float = 0.0
     price_change_24h_percent: float = 0.0
     liquidity_level: str = "نامشخص"
+    fib_confirmation: str = None
+    volatility_level: str = "نامشخص"
+    volatility_percentile: float = None
+    volatility_risk_mult: float = 1.0
+    support: float = None
+    resistance: float = None
 
     @property
     def confidence_percent(self) -> int:
@@ -466,6 +528,7 @@ def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str,
         df, price, atr, direction, float(last["ema12"]) if not pd.isna(last["ema12"]) else None,
         atr_sl_mult=atr_sl_mult, rr_targets=rr_targets
     )
+    volatility = _detect_volatility_regime(df)
 
     return SingleTFResult(
         symbol=symbol,
@@ -493,4 +556,10 @@ def build_single_result(df: pd.DataFrame, symbol: str, timeframe: str,
         sl_basis=levels["sl_basis"],
         tps=levels["tps"],
         risk=levels["risk"],
+        fib_confirmation=levels["fib_confirmation"],
+        volatility_level=volatility["level"],
+        volatility_percentile=volatility["percentile"],
+        volatility_risk_mult=volatility["risk_mult"],
+        support=levels["support"],
+        resistance=levels["resistance"],
     )

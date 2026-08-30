@@ -97,3 +97,32 @@ WEB_PANEL_PASSWORD = os.getenv("WEB_PANEL_PASSWORD", "")
 WEB_PANEL_ENABLED = os.getenv("WEB_PANEL_ENABLED", "true").lower() in ("1", "true", "yes")
 # Railway خودش این متغیر رو ست می‌کنه؛ لوکال دیفالت 8000
 WEB_PANEL_PORT = int(os.getenv("PORT", "8000"))
+
+# --- فیبوناچی (تاییدکننده‌ی SL/TP) ---
+FIBONACCI_LEVELS = [0.236, 0.382, 0.5, 0.618, 0.786]
+FIBONACCI_LOOKBACK = 30            # تعداد کندل برای تشخیص Swing High/Low مرجع فیبوناچی
+FIBONACCI_TOLERANCE_ATR_MULT = 0.3  # فاصله‌ی مجاز (بر حسب ATR) تا SL/ورود "نزدیک" یه سطح فیبوناچی حساب بشه
+
+# --- تشخیص رژیم نوسان (بر پایه‌ی صدک ATR نسبت به تاریخچه‌ی خودش) ---
+VOLATILITY_LOOKBACK = 100          # تعداد کندل برای محاسبه‌ی صدک ATR
+VOLATILITY_HIGH_PERCENTILE = 80    # بالای این صدک یعنی نوسان «بالا»
+VOLATILITY_EXTREME_PERCENTILE = 95  # بالای این صدک یعنی نوسان «شدید»
+VOLATILITY_HIGH_RISK_MULT = 0.5     # توی نوسان بالا، حجم پوزیشن پیشنهادی رو در این ضریب ضرب کن
+VOLATILITY_EXTREME_RISK_MULT = 0.25  # توی نوسان شدید
+
+# --- عمق اردربوک (فشار خرید/فروش لحظه‌ای) ---
+ORDER_BOOK_DEPTH_LEVELS = 20        # تعداد سطح قیمتی هر طرف (bid/ask) که بررسی می‌شه
+ORDER_BOOK_IMBALANCE_THRESHOLD = 0.60  # بالای این نسبت یعنی فشار قابل‌توجه یه طرف
+
+# --- حرکت خودکار SL به نقطه‌ی سربه‌سر بعد از TP1 ---
+BREAKEVEN_AFTER_TP1 = True
+
+# --- بک‌تست پیشرو (Walk-Forward) ---
+WALK_FORWARD_SEGMENTS = 4           # داده‌ی تاریخی به این تعداد بازه‌ی مساوی تقسیم می‌شه
+
+# --- فاندامنتال (منابع رایگان) ---
+FUNDAMENTALS_ENABLED = True
+COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
+FEAR_GREED_URL = "https://api.alternative.me/fng/"
+FUNDAMENTALS_CACHE_TTL_COIN = 30 * 60     # اطلاعات هر کوین: هر ۳۰ دقیقه تازه‌سازی کن
+FUNDAMENTALS_CACHE_TTL_MARKET = 15 * 60   # ترس‌وطمع/دامیننس: هر ۱۵ دقیقه

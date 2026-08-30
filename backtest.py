@@ -224,3 +224,56 @@ def run_backtest(
         date_to=df.iloc[-1]["timestamp"] if n else None,
         trades=trades,
     )
+
+
+def run_walk_forward_backtest(
+    df: pd.DataFrame, symbol: str, timeframe: str, segments: int,
+    confidence_threshold_fraction: float = None, atr_sl_mult: float = None, rr_targets: list = None,
+    warmup: int = DEFAULT_WARMUP_CANDLES, max_hold: int = DEFAULT_MAX_HOLD_CANDLES,
+) -> list:
+    """
+    داده‌ی تاریخی رو به `segments` بازه‌ی مساوی و بدون هم‌پوشانی تقسیم
+    می‌کنه و روی هرکدوم جدا بک‌تست اجرا می‌کنه - هدف اینه که مشخص بشه
+    استراتژی فقط روی یه بازه‌ی خاص (مثلاً یه رالی صعودی) خوب بوده
+    (overfitting/شانسی) یا واقعاً روی چند دوره‌ی متفاوت پایداره.
+
+    برای اینکه اندیکاتورهای هر بازه از همون ابتدا معتبر باشن، هر بازه
+    (به‌جز اولی) به‌اندازه‌ی warmup کندل از قبل خودش هم قرض می‌گیره -
+    این کندل‌های قرضی صرفاً برای محاسبه‌ی اندیکاتورن، جزو بازه‌ی
+    معامله‌گیری حساب نمی‌شن. بازه‌ی اول این امکان رو نداره (چیزی قبلش
+    نیست)، پس عملکردش ممکنه به‌خاطر warmup داخلی، کمی محافظه‌کارانه‌تر
+    از بقیه به‌نظر برسه.
+
+    خروجی: لیستی از BacktestResult، یکی به ازای هر بازه.
+    """
+    n = len(df)
+    segment_size = n // segments
+    results = []
+
+    for seg_idx in range(segments):
+        seg_start = seg_idx * segment_size
+        seg_end = n if seg_idx == segments - 1 else (seg_idx + 1) * segment_size
+
+        fetch_start = max(0, seg_start - warmup)
+        segment_df = df.iloc[fetch_start:seg_end].reset_index(drop=True)
+
+        if fetch_start > 0:
+            effective_warmup = seg_start - fetch_start  # دقیقاً برابر warmup، مگر نزدیک ابتدای داده باشیم
+        else:
+            effective_warmup = warmup  # بازه‌ی اول - چیزی برای قرض گرفتن نیست
+
+        effective_warmup = min(effective_warmup, max(0, len(segment_df) - 2))
+
+        result = run_backtest(
+            segment_df, symbol, timeframe,
+            confidence_threshold_fraction=confidence_threshold_fraction,
+            atr_sl_mult=atr_sl_mult, rr_targets=rr_targets,
+            warmup=effective_warmup, max_hold=max_hold,
+        )
+        # date_from رو به شروع واقعی این بازه (نه کندل‌های قرضی warmup)
+        # اصلاح می‌کنیم، وگرنه توی نمایش به‌اشتباه به‌نظر میاد بازه‌ها
+        # با هم هم‌پوشانی دارن - در حالی که فقط اندیکاتورها قرض گرفته شدن
+        result.date_from = df.iloc[seg_start]["timestamp"]
+        results.append(result)
+
+    return results

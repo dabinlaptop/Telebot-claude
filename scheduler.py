@@ -69,10 +69,16 @@ async def check_signal_performance_job(app: Application):
     هر سیگنال بازی که از /signal صادر شده رو با قیمت لحظه‌ای مقایسه
     می‌کنه؛ اگه به سطح جدیدی (TP1/TP2/TP3/SL) نسبت به آخرین وضعیت
     ثبت‌شده رسیده باشه، وضعیتش رو به‌روز و به کاربر خبر می‌ده. فقط
-    TP3 و SL نهایی‌ان (سیگنال می‌بنده)؛ TP1/TP2 سیگنال رو باز نگه
-    می‌دارن چون ممکنه به سطح بعدی هم برسه.
+    TP3، SL و BREAKEVEN نهایی‌ان (سیگنال می‌بنده)؛ TP1/TP2 سیگنال رو
+    باز نگه می‌دارن چون ممکنه به سطح بعدی هم برسه.
+
+    بعد از رسیدن به TP1 (اولین‌بار)، اگه BREAKEVEN_AFTER_TP1 فعال باشه،
+    حد ضرر خودکار به نقطه‌ی ورود (سربه‌سر) منتقل می‌شه - یعنی از اون
+    لحظه به بعد، این معامله دیگه نمی‌تونه ضرر واقعی بده؛ اگه بعداً به
+    همون SL جدید (=entry) برخورد کنه، به‌جای SL_HIT، BREAKEVEN_HIT ثبت
+    می‌شه (نه برد نه باخت).
     """
-    from config import MAX_OPEN_SIGNALS_PER_CHECK
+    from config import MAX_OPEN_SIGNALS_PER_CHECK, BREAKEVEN_AFTER_TP1
 
     logger.info("شروع پایش عملکرد سیگنال‌های باز...")
     open_signals = await db.get_open_signal_performances(limit=MAX_OPEN_SIGNALS_PER_CHECK)
@@ -98,10 +104,12 @@ async def check_signal_performance_job(app: Application):
         if price is None:
             continue
 
+        is_breakeven_sl = sig["sl"] is not None and abs(sig["sl"] - sig["entry"]) < 1e-9
+
         candidate_status = None
         if sig["direction"] == "BUY":
             if sig["sl"] and price <= sig["sl"]:
-                candidate_status = "SL_HIT"
+                candidate_status = "BREAKEVEN_HIT" if is_breakeven_sl else "SL_HIT"
             elif sig["tp3"] and price >= sig["tp3"]:
                 candidate_status = "TP3_HIT"
             elif sig["tp2"] and price >= sig["tp2"]:
@@ -110,7 +118,7 @@ async def check_signal_performance_job(app: Application):
                 candidate_status = "TP1_HIT"
         elif sig["direction"] == "SELL":
             if sig["sl"] and price >= sig["sl"]:
-                candidate_status = "SL_HIT"
+                candidate_status = "BREAKEVEN_HIT" if is_breakeven_sl else "SL_HIT"
             elif sig["tp3"] and price <= sig["tp3"]:
                 candidate_status = "TP3_HIT"
             elif sig["tp2"] and price <= sig["tp2"]:
@@ -121,24 +129,32 @@ async def check_signal_performance_job(app: Application):
         if not candidate_status or candidate_status == sig["status"]:
             continue  # هیچ پیشرفت جدیدی نسبت به آخرین باری که چک شده نیست
 
-        # SL همیشه یعنی وضعیت تغییر کرده (مگر از قبل SL بوده که بالا رد شد)
+        # SL/BREAKEVEN همیشه یعنی وضعیت تغییر کرده (مگر از قبل همون بوده که بالا رد شد)
         is_progress = (
-            candidate_status == "SL_HIT"
+            candidate_status in ("SL_HIT", "BREAKEVEN_HIT")
             or status_order.get(candidate_status, 0) > status_order.get(sig["status"], 0)
         )
         if not is_progress:
             continue
 
-        should_close = candidate_status in ("TP3_HIT", "SL_HIT")
+        should_close = candidate_status in ("TP3_HIT", "SL_HIT", "BREAKEVEN_HIT")
         if should_close:
             await db.close_signal_performance(sig["id"], candidate_status)
         else:
             await db.update_signal_status(sig["id"], candidate_status)
 
-        emoji = "🎯" if "TP" in candidate_status else "🛑"
+        breakeven_note = ""
+        if candidate_status == "TP1_HIT" and BREAKEVEN_AFTER_TP1:
+            await db.move_sl_to_breakeven(sig["id"], sig["entry"])
+            breakeven_note = "\n\n🛡 حد ضرر خودکار به نقطه‌ی سربه‌سر (Break-even) منتقل شد - از الان این معامله دیگه نمی‌تونه ضرر واقعی بده."
+
+        emoji = {"TP1_HIT": "🎯", "TP2_HIT": "🎯", "TP3_HIT": "🎯",
+                 "SL_HIT": "🛑", "BREAKEVEN_HIT": "🛡"}[candidate_status]
         status_fa = {
             "TP1_HIT": "به TP1 رسید", "TP2_HIT": "به TP2 رسید",
-            "TP3_HIT": "به TP3 رسید (سیگنال بسته شد ✅)", "SL_HIT": "به حد ضرر خورد (سیگنال بسته شد ❌)",
+            "TP3_HIT": "به TP3 رسید (سیگنال بسته شد ✅)",
+            "SL_HIT": "به حد ضرر خورد (سیگنال بسته شد ❌)",
+            "BREAKEVEN_HIT": "بعد از رسیدن به TP1، به نقطه‌ی سربه‌سر برگشت (سیگنال بدون سود/ضرر بسته شد ⚪️)",
         }[candidate_status]
         try:
             await app.bot.send_message(
@@ -147,7 +163,8 @@ async def check_signal_performance_job(app: Application):
                     f"{emoji} *بروزرسانی سیگنال {sig['symbol']}* ({sig['timeframe']})\n"
                     f"وضعیت: {status_fa}\n"
                     f"قیمت فعلی: `{price:,.4f}`\n"
-                    f"ورود: `{sig['entry']:,.4f}`\n\n"
+                    f"ورود: `{sig['entry']:,.4f}`"
+                    f"{breakeven_note}\n\n"
                     f"برای دیدن آمار کلی: /mystats"
                 ),
                 parse_mode=ParseMode.MARKDOWN

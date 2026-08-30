@@ -9,6 +9,7 @@ from single_analysis import (
 )
 from charts import generate_extended_chart
 from market_context import check_higher_timeframe_alignment, check_btc_correlation
+from fundamentals import get_coin_fundamentals, get_market_fundamentals
 import database as db
 
 
@@ -78,17 +79,23 @@ DIRECTION_META = {
 }
 
 
-def _calc_position_size(risk_settings: dict, entry: float, sl: float) -> dict | None:
+def _calc_position_size(risk_settings: dict, entry: float, sl: float, volatility_risk_mult: float = 1.0) -> dict | None:
     """
     با داشتن موجودی فرضی و درصد ریسک کاربر (از /setrisk)، حجم پوزیشن رو
     محاسبه می‌کنه: مقدار ریسک دلاری = موجودی × درصد ریسک؛ حجم = ریسک ÷
     فاصله‌ی ورود تا حد ضرر (روش استاندارد مدیریت ریسک با % ثابت).
+
+    اگه بازار توی رژیم نوسان بالا/شدید باشه (volatility_risk_mult < 1)،
+    مقدار ریسک دلاری رو خودکار کمتر می‌کنیم - چون نوسان بیشتر یعنی
+    فاصله‌ی SL هم معمولاً بزرگ‌تره، ولی این جدا از اون، یه لایه‌ی احتیاط
+    اضافه‌ست: توی بازار پرنوسان، حتی با همون % ریسک همیشگی، بهتره
+    حجم واقعی رو کمتر بگیری.
     """
     if not risk_settings or not entry or not sl:
         return None
     balance = risk_settings["account_balance"]
     risk_percent = risk_settings["risk_percent"]
-    risk_amount = balance * risk_percent / 100
+    risk_amount = balance * risk_percent / 100 * volatility_risk_mult
     per_unit_risk = abs(entry - sl)
     if per_unit_risk <= 0:
         return None
@@ -100,11 +107,13 @@ def _calc_position_size(risk_settings: dict, entry: float, sl: float) -> dict | 
         "position_value": position_value,
         "risk_percent": risk_percent,
         "balance": balance,
+        "volatility_adjusted": volatility_risk_mult < 1.0,
     }
 
 
 def _format_single_result(result, higher_tf_info: dict = None, btc_corr_info: dict = None,
-                           position_size: dict = None) -> str:
+                           position_size: dict = None, order_book_info: dict = None,
+                           coin_fundamentals: dict = None, market_fundamentals: dict = None) -> str:
     meta = DIRECTION_META[result.direction]
     tf_label = TIMEFRAME_LABELS_FA.get(result.timeframe, result.timeframe)
     reason_icon = "✅" if result.direction == "BUY" else "❌"
@@ -124,6 +133,7 @@ def _format_single_result(result, higher_tf_info: dict = None, btc_corr_info: di
         f"📊 اطمینان: {result.confidence_percent}% (امتیاز {result.score:+.1f} از {result.max_score:.0f})",
         f"🧭 جهت: {meta['compass']}",
         f"💪 قدرت روند (ADX): {trend_strength}",
+        f"🌪 نوسان بازار: {result.volatility_level}" + (f" (صدک {result.volatility_percentile:.0f})" if result.volatility_percentile is not None else ""),
         "",
         f"💰 قیمت فعلی: ${_fmt_price(result.price)}",
         f"💧 نقدینگی (۲۴س): ${result.quote_volume_24h:,.0f} — {result.liquidity_level}",
@@ -156,8 +166,38 @@ def _format_single_result(result, higher_tf_info: dict = None, btc_corr_info: di
         else:
             context_lines.append(f"🔓 همبستگی پایین با BTC ({corr_pct:.0f}%) — حرکت نسبتاً مستقل از بازار کلی")
 
+    if order_book_info:
+        bid_pct = order_book_info["bid_ratio"] * 100
+        from config import ORDER_BOOK_IMBALANCE_THRESHOLD
+        if order_book_info["bid_ratio"] >= ORDER_BOOK_IMBALANCE_THRESHOLD:
+            context_lines.append(f"📚 اردربوک: فشار خرید بیشتر ({bid_pct:.0f}% حجم سفارش‌ها)")
+        elif order_book_info["bid_ratio"] <= (1 - ORDER_BOOK_IMBALANCE_THRESHOLD):
+            context_lines.append(f"📚 اردربوک: فشار فروش بیشتر ({100-bid_pct:.0f}% حجم سفارش‌ها)")
+        else:
+            context_lines.append(f"📚 اردربوک: نسبتاً متعادل (خرید {bid_pct:.0f}%)")
+
+    if result.fib_confirmation:
+        context_lines.append(f"🔢 حد ضرر {result.fib_confirmation} — اعتبار بیشتر")
+
     if context_lines:
         lines += ["", "🌐 زمینه‌ی بازار:"] + [f"• {c}" for c in context_lines]
+
+    fundamental_lines = []
+    if coin_fundamentals:
+        rank_txt = f"#{coin_fundamentals['rank']}" if coin_fundamentals.get("rank") else "نامشخص"
+        fundamental_lines.append(f"رنک بازار: {rank_txt}")
+        if coin_fundamentals.get("circulating_supply_pct") is not None:
+            fundamental_lines.append(f"عرضه‌ی در گردش: {coin_fundamentals['circulating_supply_pct']:.0f}% از کل")
+    if market_fundamentals:
+        fg = market_fundamentals.get("fear_greed")
+        if fg:
+            fundamental_lines.append(f"شاخص ترس‌وطمع بازار: {fg['value']} ({fg['classification']})")
+        dom = market_fundamentals.get("btc_dominance")
+        if dom is not None:
+            fundamental_lines.append(f"دامیننس بیت‌کوین: {dom:.1f}%")
+
+    if fundamental_lines:
+        lines += ["", "🏛 فاندامنتال:"] + [f"• {f}" for f in fundamental_lines]
 
     if result.direction != "NEUTRAL":
         lines += [
@@ -176,11 +216,13 @@ def _format_single_result(result, higher_tf_info: dict = None, btc_corr_info: di
         for i, tp in enumerate(result.tps, start=1):
             rr = abs(tp - result.entry) / result.risk if result.risk else 0
             lines.append(f"• TP{i} (۱:{rr:.1f}): ${_fmt_price(tp)}")
+        lines.append("ℹ️ بعد از رسیدن به TP1، حد ضرر خودکار به نقطه‌ی سربه‌سر منتقل می‌شه (اگه پیگیریش کنی).")
 
         if position_size:
+            vol_note = " (به‌خاطر نوسان بالای بازار، حجم کاهش داده شد ⚠️)" if position_size.get("volatility_adjusted") else ""
             lines += [
                 "",
-                f"📐 حجم پوزیشن پیشنهادی (ریسک {position_size['risk_percent']:.1f}% از ${position_size['balance']:,.0f}):",
+                f"📐 حجم پوزیشن پیشنهادی (ریسک {position_size['risk_percent']:.1f}% از ${position_size['balance']:,.0f}){vol_note}:",
                 f"• مقدار: {position_size['units']:,.4f} واحد (~${position_size['position_value']:,.2f})",
                 f"• ریسک دلاری: ${position_size['risk_amount']:,.2f}",
             ]
@@ -255,6 +297,7 @@ async def run_single_timeframe_signal(symbol: str, timeframe: str, user_id: int 
 
         higher_tf_info = None
         btc_corr_info = None
+        order_book_info = None
         if result.direction != "NEUTRAL":
             try:
                 higher_tf_info = await check_higher_timeframe_alignment(client, symbol, timeframe, result.direction)
@@ -264,11 +307,30 @@ async def run_single_timeframe_signal(symbol: str, timeframe: str, user_id: int 
                 btc_corr_info = await check_btc_correlation(client, symbol, timeframe)
             except Exception:
                 pass
+            try:
+                from config import ORDER_BOOK_DEPTH_LEVELS
+                order_book_info = await client.fetch_order_book_imbalance(symbol, depth=ORDER_BOOK_DEPTH_LEVELS)
+            except Exception:
+                pass
+
+        # فاندامنتال (منابع رایگان، best-effort - اگه در دسترس نبود، فقط حذف می‌شه از پیام)
+        coin_fundamentals = None
+        market_fundamentals = None
+        from config import FUNDAMENTALS_ENABLED
+        if FUNDAMENTALS_ENABLED:
+            try:
+                coin_fundamentals = await get_coin_fundamentals(symbol)
+            except Exception:
+                pass
+            try:
+                market_fundamentals = await get_market_fundamentals()
+            except Exception:
+                pass
 
         position_size = None
         if user_id is not None and result.direction != "NEUTRAL":
             risk_settings = await db.get_user_risk(user_id)
-            position_size = _calc_position_size(risk_settings, result.entry, result.sl)
+            position_size = _calc_position_size(risk_settings, result.entry, result.sl, result.volatility_risk_mult)
 
         await db.log_signal(symbol, result.direction, result.confidence_percent, result.price)
 
@@ -280,8 +342,18 @@ async def run_single_timeframe_signal(symbol: str, timeframe: str, user_id: int 
                 user_id, symbol, timeframe, result.direction, result.entry, result.sl, result.tps
             )
 
-        text = _format_single_result(result, higher_tf_info, btc_corr_info, position_size)
-        levels = {"entry": result.entry, "sl": result.sl, "tps": result.tps} if result.direction != "NEUTRAL" else None
+        text = _format_single_result(
+            result, higher_tf_info, btc_corr_info, position_size,
+            order_book_info, coin_fundamentals, market_fundamentals
+        )
+        levels = None
+        if result.direction != "NEUTRAL":
+            levels = {"entry": result.entry, "sl": result.sl, "tps": result.tps}
+            if result.support is not None and result.resistance is not None:
+                from config import FIBONACCI_LEVELS
+                diff = result.resistance - result.support
+                if diff > 0:
+                    levels["fib_levels"] = {f: result.resistance - diff * f for f in FIBONACCI_LEVELS}
         chart_buf = generate_extended_chart(df, symbol, timeframe, levels=levels)
         keyboard = _result_keyboard(symbol, timeframe, pending_id=pending_id)
         return text, chart_buf, keyboard

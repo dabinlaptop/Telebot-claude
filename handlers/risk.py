@@ -67,7 +67,8 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     stats = await db.get_user_performance_stats(user_id)
 
-    if stats["closed"] == 0 and stats["open"] == 0:
+    total_resolved = stats["closed"] + stats["breakeven"]
+    if total_resolved == 0 and stats["open"] == 0:
         await update.message.reply_text(
             "هنوز سیگنالی برات ثبت نشده. بعد از گرفتن اولین سیگنال از `/signal`، "
             "می‌تونی وضعیتش رو اینجا پیگیری کنی."
@@ -77,17 +78,21 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["📊 *آمار عملکرد سیگنال‌های تو:*", ""]
     if stats["win_rate"] is not None:
         lines.append(f"نرخ برد: *{stats['win_rate']:.0f}%* ({stats['wins']} برد / {stats['losses']} باخت)")
+    elif total_resolved > 0:
+        lines.append(f"همه‌ی {total_resolved} سیگنال به‌نتیجه‌رسیده تا الان سربه‌سر بسته شدن (نه برد، نه باخت).")
     else:
         lines.append("هنوز هیچ سیگنالی به TP یا SL نرسیده (همه در حال پایشن).")
 
     lines.append(f"🟢 برخورد به تارگت: {stats['wins']}")
     lines.append(f"🔴 برخورد به حد ضرر: {stats['losses']}")
+    if stats["breakeven"]:
+        lines.append(f"⚪️ بسته‌شده سربه‌سر (بعد از TP1): {stats['breakeven']}")
     lines.append(f"⏳ در حال پایش (باز): {stats['open']}")
 
     breakdown = stats["breakdown"]
     detail_map = {
         "TP1_HIT": "رسیده به TP1", "TP2_HIT": "رسیده به TP2", "TP3_HIT": "رسیده به TP3",
-        "SL_HIT": "خورده به SL", "OPEN": "باز",
+        "SL_HIT": "خورده به SL", "BREAKEVEN_HIT": "سربه‌سر بسته شده", "OPEN": "باز",
     }
     detail_lines = [f"• {detail_map.get(k, k)}: {v}" for k, v in breakdown.items() if k in detail_map]
     if detail_lines:

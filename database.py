@@ -63,14 +63,6 @@ async def init_db():
                 added_at TEXT
             )
         """)
-        # درخواست‌های دسترسی در انتظار تصمیم ادمین - برای جلوگیری از
-        # نوتیفیکیشن تکراری وقتی یه کاربر چندبار /start رو می‌زنه
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS access_requests (
-                user_id INTEGER PRIMARY KEY,
-                requested_at TEXT
-            )
-        """)
         # درخواست‌های دسترسی در انتظار تایید ادمین - برای جلوگیری از
         # اسپم نوتیفیکیشن (هر کاربر فقط یه‌بار توی این جدول ثبت می‌شه،
         # حتی اگه چندبار /start بزنه، تا وقتی تایید/رد بشه)
@@ -668,4 +660,27 @@ async def get_access_requests() -> list[dict]:
         )
         rows = await cursor.fetchall()
         cols = ["user_id", "username", "requested_at"]
+        return [dict(zip(cols, r)) for r in rows]
+
+
+# ==================== تحلیل فراداده (Meta-Analytics) ====================
+
+async def get_resolved_signals(user_id: int = None) -> list[dict]:
+    """
+    همه‌ی سیگنال‌هایی که به یه نتیجه‌ی نهایی رسیدن (TP/SL/سربه‌سر) - پایه‌ی
+    تحلیل فراداده (کدوم تایم‌فریم/نماد/روز بهتر عمل کرده). اگه user_id
+    داده بشه فقط سیگنال‌های همون کاربر، وگرنه کل ربات (برای ادمین).
+    """
+    query = """SELECT symbol, timeframe, direction, status, created_at, closed_at
+               FROM signal_performance
+               WHERE status IN ('TP1_HIT', 'TP2_HIT', 'TP3_HIT', 'SL_HIT', 'BREAKEVEN_HIT')"""
+    params = ()
+    if user_id is not None:
+        query += " AND user_id = ?"
+        params = (user_id,)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        cols = ["symbol", "timeframe", "direction", "status", "created_at", "closed_at"]
         return [dict(zip(cols, r)) for r in rows]

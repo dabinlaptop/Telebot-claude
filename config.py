@@ -126,3 +126,19 @@ COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 FEAR_GREED_URL = "https://api.alternative.me/fng/"
 FUNDAMENTALS_CACHE_TTL_COIN = 30 * 60     # اطلاعات هر کوین: هر ۳۰ دقیقه تازه‌سازی کن
 FUNDAMENTALS_CACHE_TTL_MARKET = 15 * 60   # ترس‌وطمع/دامیننس: هر ۱۵ دقیقه
+
+# --- تحلیل فراداده (Meta-Analytics) ---
+# MIN_SAMPLES_FOR_CONFIDENCE توی analytics.py تعریف شده (نه اینجا) چون
+# فقط همون‌جا استفاده می‌شه
+
+# --- بکاپ خودکار دیتابیس ---
+# پیش‌فرض: کنار خودِ فایل دیتابیس، توی یه پوشه‌ی backups/ - یعنی اگه
+# DB_PATH روی Volume دائمی Railway باشه (مثل /data/bot_database.db)،
+# بکاپ‌ها هم خودکار روی همون دیسک دائمی ذخیره می‌شن، نه دیسک موقت
+BACKUP_DIR = os.getenv(
+    "BACKUP_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(DB_PATH)) or ".", "backups")
+)
+BACKUP_INTERVAL_HOURS = float(os.getenv("BACKUP_INTERVAL_HOURS", "6"))
+BACKUP_INTERVAL_SECONDS = int(BACKUP_INTERVAL_HOURS * 3600)
+BACKUP_MAX_COUNT = int(os.getenv("BACKUP_MAX_COUNT", "14"))  # حداکثر تعداد بکاپ نگه‌داشته‌شده (رول می‌شه)

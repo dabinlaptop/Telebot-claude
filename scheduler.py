@@ -11,6 +11,7 @@ from telegram.constants import ParseMode
 from exchange import ExchangeClient
 from signals import analyze_symbol, SIGNAL_EMOJI, SIGNAL_FA
 import database as db
+import backup
 
 logger = logging.getLogger(__name__)
 
@@ -173,3 +174,28 @@ async def check_signal_performance_job(app: Application):
             logger.warning(f"ارسال بروزرسانی عملکرد به {sig['user_id']} ناموفق بود: {e}")
 
     logger.info("پایش عملکرد سیگنال‌ها تمام شد.")
+
+
+async def backup_job(app: Application):
+    """
+    بکاپ خودکار دوره‌ای دیتابیس. اگه موفق بود چیزی به کسی اطلاع
+    نمی‌ده (تا اسپم نشه)؛ ولی اگه شکست بخوره، به همه‌ی ادمین‌ها خبر
+    می‌ده - چون شکست مکرر بکاپ یعنی موقع نیاز واقعی (خرابی دیسک، حذف
+    اشتباهی و...) داده‌ای برای بازگردانی وجود نداره.
+    """
+    from config import ADMIN_IDS
+
+    try:
+        path = await backup.create_backup()
+        logger.info(f"بکاپ خودکار دوره‌ای موفق: {path}")
+    except Exception as e:
+        logger.error(f"بکاپ خودکار دوره‌ای ناموفق بود: {e}")
+        for admin_id in ADMIN_IDS:
+            try:
+                await app.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"⚠️ بکاپ خودکار دیتابیس ناموفق بود:\n`{e}`\n\nلطفاً وضعیت دیسک/فضای ذخیره‌سازی رو چک کن.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass

@@ -11,22 +11,22 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import (
     BOT_TOKEN, AUTO_SCAN_INTERVAL, SIGNAL_PERFORMANCE_CHECK_INTERVAL,
-    WEB_PANEL_ENABLED, WEB_PANEL_PORT, ADMIN_IDS,
+    WEB_PANEL_ENABLED, WEB_PANEL_PORT, ADMIN_IDS, BACKUP_INTERVAL_SECONDS,
 )
 import database as db
-from scheduler import scan_job, check_signal_performance_job
+from scheduler import scan_job, check_signal_performance_job, backup_job
 from handlers.basic import start, help_command
 from handlers.analysis import signal_command, chart_command, price_command, top_command, gainers_command
 from handlers.watchlist import watch_command, unwatch_command, mywatchlist_command, autoscan_command
 from handlers.callbacks import callback_router
-from handlers.risk import setrisk_command, myrisk_command, mystats_command, mysignals_command
+from handlers.risk import setrisk_command, myrisk_command, mystats_command, mysignals_command, myanalytics_command
 from handlers.backtest import backtest_command
 from handlers.admin import (
     admin_help_command, block_command, unblock_command, blocklist_command,
     stats_command, broadcast_command, users_command, finduser_command,
     whitelist_add_command, whitelist_remove_command, whitelist_list_command,
     accessmode_command, setwelcome_command, removewelcome_command, getwelcome_command,
-    notify_admins_of_access_request,
+    notify_admins_of_access_request, botanalytics_command, backup_command, backuplist_command,
 )
 
 logging.basicConfig(
@@ -106,6 +106,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("myrisk", myrisk_command))
     app.add_handler(CommandHandler("mystats", mystats_command))
     app.add_handler(CommandHandler("mysignals", mysignals_command))
+    app.add_handler(CommandHandler("myanalytics", myanalytics_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
 
     # دستورات ادمین (خودشون داخلاً چک می‌کنن کاربر ادمینه یا نه)
@@ -114,6 +115,9 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("unblock", unblock_command))
     app.add_handler(CommandHandler("blocklist", blocklist_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("botanalytics", botanalytics_command))
+    app.add_handler(CommandHandler("backup", backup_command))
+    app.add_handler(CommandHandler("backuplist", backuplist_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(CommandHandler("finduser", finduser_command))
@@ -133,10 +137,11 @@ def start_background_jobs(app: Application):
     scheduler = AsyncIOScheduler()
     scheduler.add_job(scan_job, "interval", seconds=AUTO_SCAN_INTERVAL, args=[app])
     scheduler.add_job(check_signal_performance_job, "interval", seconds=SIGNAL_PERFORMANCE_CHECK_INTERVAL, args=[app])
+    scheduler.add_job(backup_job, "interval", seconds=BACKUP_INTERVAL_SECONDS, args=[app])
     scheduler.start()
     logger.info(
-        "زمان‌بندها فعال شدن. اسکن واچ‌لیست هر %s ثانیه، پایش عملکرد سیگنال هر %s ثانیه.",
-        AUTO_SCAN_INTERVAL, SIGNAL_PERFORMANCE_CHECK_INTERVAL
+        "زمان‌بندها فعال شدن. اسکن واچ‌لیست هر %s ثانیه، پایش عملکرد سیگنال هر %s ثانیه، بکاپ دیتابیس هر %s ثانیه.",
+        AUTO_SCAN_INTERVAL, SIGNAL_PERFORMANCE_CHECK_INTERVAL, BACKUP_INTERVAL_SECONDS
     )
 
 

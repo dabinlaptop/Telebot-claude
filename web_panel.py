@@ -12,10 +12,11 @@ Railway به‌صورت خودکار این پورت رو تشخیص می‌ده
 import secrets
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, status, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 import database as db
+import backup
 from config import WEB_PANEL_USERNAME, WEB_PANEL_PASSWORD, BOT_TOKEN
 
 app = FastAPI(title="پنل مدیریت ربات سیگنال")
@@ -73,6 +74,7 @@ def layout(title: str, body: str) -> str:
   <a class="nav" href="/users">👥 کاربران</a>
   <a class="nav" href="/blocked">🚫 مسدودها</a>
   <a class="nav" href="/settings">⚙️ تنظیمات</a>
+  <a class="nav" href="/backups">💾 بکاپ‌ها</a>
   <a class="nav" href="/broadcast">📢 پیام همگانی</a>
 </div>
 <hr style="border-color:#2a2d3a; margin:16px 0;">
@@ -228,6 +230,53 @@ SETTINGS_SCHEMA = [
     ("atr_sl_mult", "ضریب ATR برای حد ضرر", "1.5", "عدد اعشاری"),
     ("rr_targets", "نسبت‌های ریسک‌به‌ریوارد TP1,TP2,TP3", "1.0,2.0,3.0", "سه عدد با کاما جدا"),
 ]
+
+
+@app.get("/backups", response_class=HTMLResponse)
+async def backups_page(user: str = Depends(verify_auth)):
+    backups = backup.list_backups()
+    rows = ""
+    for b in backups:
+        size_str = f"{b['size_kb']:.1f} KB" if b["size_kb"] < 1024 else f"{b['size_kb']/1024:.1f} MB"
+        date_str = b["created_at"].strftime("%Y-%m-%d %H:%M")
+        rows += (
+            f"<tr><td>{b['filename']}</td><td>{size_str}</td><td>{date_str}</td>"
+            f"<td><a class='nav' href='/backups/download/{b['filename']}'>⬇️ دانلود</a></td></tr>"
+        )
+    if not rows:
+        rows = "<tr><td colspan='4' class='hint'>هنوز هیچ بکاپی ساخته نشده.</td></tr>"
+
+    body = f"""
+    <div class="card">
+      <h3>بکاپ‌گیری دستی</h3>
+      <p class="hint">علاوه بر بکاپ خودکار دوره‌ای (هر چند ساعت یه‌بار)، می‌تونی همین الان یه بکاپ فوری بسازی.</p>
+      <form method="post" action="/backups/create">
+        <button type="submit">📸 ساخت بکاپ الان</button>
+      </form>
+    </div>
+    <div class="card">
+      <h3>بکاپ‌های موجود ({len(backups)})</h3>
+      <table><tr><th>فایل</th><th>حجم</th><th>تاریخ</th><th></th></tr>{rows}</table>
+    </div>
+    """
+    return layout("بکاپ‌ها", body)
+
+
+@app.post("/backups/create")
+async def create_backup_web(user: str = Depends(verify_auth)):
+    try:
+        await backup.create_backup()
+    except Exception:
+        pass  # صفحه‌ی بعدی هرحال لیست به‌روز رو نشون می‌ده؛ اگه واقعاً fail شده باشه، لیست تغییری نمی‌کنه
+    return RedirectResponse("/backups", status_code=303)
+
+
+@app.get("/backups/download/{filename}")
+async def download_backup_web(filename: str, user: str = Depends(verify_auth)):
+    path = backup.get_backup_path(filename)
+    if not path:
+        raise HTTPException(status_code=404, detail="فایل بکاپ پیدا نشد")
+    return FileResponse(path, filename=filename, media_type="application/octet-stream")
 
 
 @app.get("/settings", response_class=HTMLResponse)

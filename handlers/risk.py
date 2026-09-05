@@ -2,6 +2,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 import database as db
+import analytics
 
 
 async def setrisk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,3 +145,58 @@ async def mysignals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🗑 حذف از پایش", callback_data=f"delsig:{sig['id']}")
         ]])
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+
+
+def _fmt_group_line(stat: dict) -> str:
+    icon = "⚠️" if stat["low_sample"] else ("🟢" if stat["win_rate"] and stat["win_rate"] >= 55 else "🔴" if stat["win_rate"] is not None and stat["win_rate"] < 45 else "⚪️")
+    wr_txt = f"{stat['win_rate']:.0f}%" if stat["win_rate"] is not None else "-"
+    breakeven_txt = f" | سربه‌سر: {stat['breakeven']}" if stat["breakeven"] else ""
+    sample_note = " (نمونه‌ی کم ⚠️)" if stat["low_sample"] else ""
+    return f"{icon} *{stat['key']}*: برد {wr_txt} ({stat['wins']}✅/{stat['losses']}❌{breakeven_txt}){sample_note}"
+
+
+async def myanalytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    تحلیل فراداده‌ی شخصی: از روی سیگنال‌هایی که قبلاً پیگیری کردی و به
+    نتیجه رسیدن، نشون می‌ده کدوم تایم‌فریم/نماد/جهت بهتر برات جواب داده.
+    هیچ داده‌ی جدیدی لازم نداره - فقط تحلیل چیزیه که از قبل ثبت شده.
+    """
+    user_id = update.effective_user.id
+    total = await analytics.get_total_resolved_count(user_id)
+
+    if total == 0:
+        await update.message.reply_text(
+            "هنوز سیگنال به‌نتیجه‌رسیده‌ای نداری که بشه ازش الگو استخراج کرد. "
+            "بعد از چند سیگنال پیگیری‌شده (`/signal` → پیگیری → رسیدن به TP/SL)، "
+            "اینجا برات الگو نشون می‌دم."
+        )
+        return
+
+    by_tf = await analytics.analyze_by_timeframe(user_id)
+    by_symbol = await analytics.analyze_by_symbol(user_id)
+    by_direction = await analytics.analyze_by_direction(user_id)
+
+    lines = [f"🔬 *تحلیل فراداده‌ی سیگنال‌های تو* (از {total} سیگنال به‌نتیجه‌رسیده)", ""]
+
+    lines.append("📊 *بر اساس تایم‌فریم:*")
+    for s in by_tf[:5]:
+        lines.append(_fmt_group_line(s))
+
+    lines.append("\n💎 *بر اساس نماد:*")
+    for s in by_symbol[:5]:
+        lines.append(_fmt_group_line(s))
+
+    lines.append("\n🧭 *بر اساس جهت (خرید/فروش):*")
+    for s in by_direction:
+        lines.append(_fmt_group_line(s))
+
+    best_tf = max((s for s in by_tf if not s["low_sample"] and s["win_rate"] is not None), key=lambda s: s["win_rate"], default=None)
+    worst_tf = min((s for s in by_tf if not s["low_sample"] and s["win_rate"] is not None), key=lambda s: s["win_rate"], default=None)
+    if best_tf and worst_tf and best_tf["key"] != worst_tf["key"]:
+        lines.append(f"\n💡 تایم‌فریم *{best_tf['key']}* برات بهتر از *{worst_tf['key']}* جواب داده.")
+
+    lines.append(
+        "\nℹ️ آیتم‌های «نمونه‌ی کم» یعنی تعداد سیگنال‌های به‌نتیجه‌رسیده "
+        f"کمتر از {analytics.MIN_SAMPLES_FOR_CONFIDENCE} تا بوده - هنوز برای نتیجه‌گیری قطعی زوده."
+    )
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)

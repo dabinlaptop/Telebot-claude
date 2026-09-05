@@ -14,12 +14,16 @@
 /setwelcome / /removewelcome / /getwelcome - پیام خوش‌آمدگویی سفارشی
 """
 import asyncio
+import os
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from config import ADMIN_IDS
 import database as db
+import analytics
+import backup
+from handlers.risk import _fmt_group_line
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,11 @@ ADMIN_HELP_TEXT = """
 *عمومی:*
 `/stats` — آمار کلی ربات
 `/broadcast متن پیام` — ارسال پیام به همه‌ی کاربران ربات
+`/botanalytics` — تحلیل فراداده‌ی کل ربات (کدوم تایم‌فریم/نماد بیشترین
+نرخ برد رو داشته، بین همه‌ی کاربران - نمونه‌ی آماری بزرگ‌تر از `/myanalytics` شخصی)
+`/backup` — ساخت یه بکاپ فوری از دیتابیس و ارسالش همین‌جا (علاوه بر
+بکاپ خودکار دوره‌ای که هر چند ساعت یه‌بار خودش انجام می‌شه)
+`/backuplist` — لیست بکاپ‌های موجود
 
 نکته: شناسه‌ی عددی کاربر (User ID) رو می‌تونی از فوروارد پیامش به
 @userinfobot یا مشابهش پیدا کنی؛ username کافی نیست.
@@ -127,6 +136,82 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📈 سیگنال‌های امروز: {stats['signals_today']}"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def botanalytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    تحلیل فراداده‌ی کل ربات (بین همه‌ی کاربران) - چون نمونه‌ی آماری‌ش
+    خیلی بزرگ‌تر از هر کاربر تنهاست، نتیجه‌گیری‌هاش قابل‌اتکاتره.
+    """
+    if not _is_admin(update.effective_user.id):
+        return
+
+    total = await analytics.get_total_resolved_count(user_id=None)
+    if total == 0:
+        await update.message.reply_text("هنوز هیچ سیگنالی توی کل ربات به نتیجه نرسیده.")
+        return
+
+    by_tf = await analytics.analyze_by_timeframe(user_id=None)
+    by_symbol = await analytics.analyze_by_symbol(user_id=None)
+    by_direction = await analytics.analyze_by_direction(user_id=None)
+
+    lines = [f"🔬 *تحلیل فراداده‌ی کل ربات* (از {total} سیگنال به‌نتیجه‌رسیده، همه‌ی کاربران)", ""]
+
+    lines.append("📊 *بر اساس تایم‌فریم:*")
+    for s in by_tf[:8]:
+        lines.append(_fmt_group_line(s))
+
+    lines.append("\n💎 *پرتکرارترین نمادها:*")
+    for s in by_symbol[:8]:
+        lines.append(_fmt_group_line(s))
+
+    lines.append("\n🧭 *بر اساس جهت:*")
+    for s in by_direction:
+        lines.append(_fmt_group_line(s))
+
+    lines.append(
+        "\nℹ️ آیتم‌های «نمونه‌ی کم» یعنی تعداد سیگنال‌های به‌نتیجه‌رسیده "
+        f"کمتر از {analytics.MIN_SAMPLES_FOR_CONFIDENCE} تا بوده."
+    )
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بکاپ فوری از دیتابیس می‌گیره و فایلش رو مستقیم همین‌جا (به‌عنوان سند تلگرامی) می‌فرسته"""
+    if not _is_admin(update.effective_user.id):
+        return
+
+    msg = await update.message.reply_text("⏳ در حال ساخت بکاپ...")
+    try:
+        path = await backup.create_backup()
+    except Exception as e:
+        await msg.edit_text(f"❌ ساخت بکاپ ناموفق بود: {e}")
+        return
+
+    size_kb = os.path.getsize(path) / 1024
+    await msg.edit_text(f"✅ بکاپ ساخته شد ({size_kb:.1f} KB). در حال ارسال فایل...")
+    try:
+        with open(path, "rb") as f:
+            await update.message.reply_document(document=f, filename=os.path.basename(path))
+        await msg.delete()
+    except Exception as e:
+        await msg.edit_text(f"✅ بکاپ ساخته شد ولی ارسال فایل ناموفق بود: {e}\nمسیر روی سرور: `{path}`", parse_mode=ParseMode.MARKDOWN)
+
+
+async def backuplist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_user.id):
+        return
+
+    backups = backup.list_backups()
+    if not backups:
+        await update.message.reply_text("هنوز هیچ بکاپی ساخته نشده. با `/backup` یکی بساز.", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    lines = [f"💾 *بکاپ‌های موجود ({len(backups)}):*", ""]
+    for b in backups:
+        lines.append(f"• `{b['filename']}` — {b['size_kb']:.1f}KB — {b['created_at'].strftime('%Y-%m-%d %H:%M')}")
+    lines.append(f"\nبرای گرفتن یه بکاپ تازه: /backup\nبرای دانلود بکاپ‌های قدیمی‌تر: پنل وب → صفحه‌ی «بکاپ‌ها»")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

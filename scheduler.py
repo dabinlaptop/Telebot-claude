@@ -176,6 +176,31 @@ async def check_signal_performance_job(app: Application):
     logger.info("پایش عملکرد سیگنال‌ها تمام شد.")
 
 
+async def news_auto_job(app: Application):
+    """اگه خبر خیلی مهم (تاثیر >=80%) اومده، برای کاربرانی که ارسال خودکار رو روشن کردن می‌فرسته"""
+    try:
+        import news as news_module
+        import database as db2
+        items = await news_module.get_combined_news(crypto_limit=6, forex_limit=4)
+        hot = [n for n in items if n["impact"] >= 80]
+        if not hot:
+            return
+        # برای جلوگیری از اسپم تکراری، فقط اگه خبر جدید باشه (کش اخبار هر 15 دقیقه عوض می‌شه)
+        user_ids = await db2.get_users_with_news_auto()
+        if not user_ids:
+            return
+        text = news_module.format_news_message(hot[:3], max_items=3)
+        header = "🚨 *خبر فوری بازار (تاثیر خیلی بالا)*\n\n"
+        full = header + text
+        for uid in user_ids:
+            try:
+                await app.bot.send_message(chat_id=uid, text=full, parse_mode="Markdown", disable_web_page_preview=True)
+            except Exception as e:
+                logger.warning(f"ارسال خبر خودکار به {uid} ناموفق: {e}")
+    except Exception as e:
+        logger.warning(f"news_auto_job failed: {e}")
+
+
 async def backup_job(app: Application):
     """
     بکاپ خودکار دوره‌ای دیتابیس. اگه موفق بود چیزی به کسی اطلاع

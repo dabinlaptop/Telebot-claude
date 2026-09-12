@@ -114,6 +114,13 @@ async def init_db():
                 value TEXT
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_news_settings (
+                user_id INTEGER PRIMARY KEY,
+                enabled INTEGER DEFAULT 1,
+                auto_enabled INTEGER DEFAULT 0
+            )
+        """)
         await db.commit()
 
 
@@ -684,3 +691,46 @@ async def get_resolved_signals(user_id: int = None) -> list[dict]:
         rows = await cursor.fetchall()
         cols = ["symbol", "timeframe", "direction", "status", "created_at", "closed_at"]
         return [dict(zip(cols, r)) for r in rows]
+
+
+# ==================== تنظیمات اخبار هر کاربر ====================
+
+async def get_user_news_enabled(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT enabled FROM user_news_settings WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            return True  # پیش‌فرض روشن
+        return bool(row[0])
+
+async def set_user_news_enabled(user_id: int, enabled: bool):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO user_news_settings (user_id, enabled) VALUES (?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET enabled=excluded.enabled""",
+            (user_id, 1 if enabled else 0)
+        )
+        await db.commit()
+
+async def get_user_news_auto(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT auto_enabled FROM user_news_settings WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            return False
+        return bool(row[0])
+
+async def set_user_news_auto(user_id: int, enabled: bool):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO user_news_settings (user_id, auto_enabled) VALUES (?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET auto_enabled=excluded.auto_enabled""",
+            (user_id, 1 if enabled else 0)
+        )
+        await db.commit()
+
+async def get_users_with_news_auto() -> list[int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT user_id FROM user_news_settings WHERE auto_enabled = 1")
+        rows = await cursor.fetchall()
+        return [r[0] for r in rows]

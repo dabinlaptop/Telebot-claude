@@ -14,13 +14,14 @@ from config import (
     WEB_PANEL_ENABLED, WEB_PANEL_PORT, ADMIN_IDS, BACKUP_INTERVAL_SECONDS,
 )
 import database as db
-from scheduler import scan_job, check_signal_performance_job, backup_job
+from scheduler import scan_job, check_signal_performance_job, backup_job, news_auto_job
 from handlers.basic import start, help_command
 from handlers.analysis import signal_command, chart_command, price_command, top_command, gainers_command
 from handlers.watchlist import watch_command, unwatch_command, mywatchlist_command, autoscan_command
 from handlers.callbacks import callback_router
 from handlers.risk import setrisk_command, myrisk_command, mystats_command, mysignals_command, myanalytics_command
 from handlers.backtest import backtest_command
+from handlers.news import news_command, news_settings_command, handle_news_callback
 from handlers.admin import (
     admin_help_command, block_command, unblock_command, blocklist_command,
     stats_command, broadcast_command, users_command, finduser_command,
@@ -108,6 +109,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("mysignals", mysignals_command))
     app.add_handler(CommandHandler("myanalytics", myanalytics_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
+    app.add_handler(CommandHandler("news", news_command))
+    app.add_handler(CommandHandler("newssettings", news_settings_command))
 
     # دستورات ادمین (خودشون داخلاً چک می‌کنن کاربر ادمینه یا نه)
     app.add_handler(CommandHandler("admin", admin_help_command))
@@ -129,6 +132,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("removewelcome", removewelcome_command))
     app.add_handler(CommandHandler("getwelcome", getwelcome_command))
 
+    app.add_handler(CallbackQueryHandler(handle_news_callback, pattern=r"^news:"))
     app.add_handler(CallbackQueryHandler(callback_router))
     return app
 
@@ -138,6 +142,7 @@ def start_background_jobs(app: Application):
     scheduler.add_job(scan_job, "interval", seconds=AUTO_SCAN_INTERVAL, args=[app])
     scheduler.add_job(check_signal_performance_job, "interval", seconds=SIGNAL_PERFORMANCE_CHECK_INTERVAL, args=[app])
     scheduler.add_job(backup_job, "interval", seconds=BACKUP_INTERVAL_SECONDS, args=[app])
+    scheduler.add_job(news_auto_job, "interval", seconds=30*60, args=[app])
     scheduler.start()
     logger.info(
         "زمان‌بندها فعال شدن. اسکن واچ‌لیست هر %s ثانیه، پایش عملکرد سیگنال هر %s ثانیه، بکاپ دیتابیس هر %s ثانیه.",

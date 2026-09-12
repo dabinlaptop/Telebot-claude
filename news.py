@@ -8,9 +8,13 @@
 import re
 import time
 import logging
+import email.utils
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import httpx
+
+# فقط اخبار/رویدادهای ۲۴ ساعت اخیر (یا ۲۴ ساعت آینده برای تقویم) نمایش داده می‌شن
+NEWS_MAX_AGE_HOURS = 24
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +35,59 @@ def _cache_get(key, ttl):
 
 def _cache_set(key, val):
     _cache[key] = (time.time(), val)
+
+def _parse_pubdate(pubdate_str: str) -> datetime | None:
+    """پارس pubDate آراس‌اس (RFC2822 مثل 'Mon, 09 Sep 2024 12:00:00 GMT')"""
+    if not pubdate_str:
+        return None
+    try:
+        dt = email.utils.parsedate_to_datetime(pubdate_str)
+        if dt is not None and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+def _is_fresh(pubdate_str: str, max_age_hours: int = NEWS_MAX_AGE_HOURS) -> bool:
+    """آیا خبر در ۲۴ ساعت اخیر منتشر شده؟ اگه تاریخ قابل پارس نباشه، تازه فرض می‌شه تا لیست خالی نمونه"""
+    dt = _parse_pubdate(pubdate_str)
+    if dt is None:
+        return True
+    now = datetime.now(timezone.utc)
+    age = now - dt.astimezone(timezone.utc)
+    # خبرهای آینده (ساعت سرور جلوتر) هم تازه حساب می‌شن
+    if age.total_seconds() < 0:
+        return True
+    return age <= timedelta(hours=max_age_hours)
+
+def _parse_forex_date(date_str: str, time_str: str) -> datetime | None:
+    """پارس تاریخ ForexFactory: date مثل '09-12-2024' یا '2024-09-12' و time مثل '10:00am'"""
+    if not date_str:
+        return None
+    date_str = date_str.strip()
+    time_str = (time_str or "").strip().lower()
+    # تاریخ
+    dt_date = None
+    for fmt in ("%m-%d-%Y", "%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%Y", "%m-%d-%y"):
+        try:
+            dt_date = datetime.strptime(date_str, fmt)
+            break
+        except ValueError:
+            continue
+    if dt_date is None:
+        return None
+    # ساعت - اگه All Day / Tentative بود، همون 00:00
+    if not time_str or time_str in ("all day", "tentative", "", "-"):
+        return dt_date.replace(tzinfo=timezone.utc)
+    # مثل 10:00am / 2:30pm / 10:00 am
+    time_str = time_str.replace(" ", "")
+    for fmt in ("%I:%M%p", "%I:%M:%S%p", "%H:%M", "%I%p"):
+        try:
+            t = datetime.strptime(time_str, fmt)
+            return dt_date.replace(hour=t.hour, minute=t.minute, second=0, tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return dt_date.replace(tzinfo=timezone.utc)
 
 # --- دیکشنری ترجمه کلمات کلیدی به فارسی ---
 KEYWORD_FA = {
@@ -160,6 +217,9 @@ async def fetch_crypto_news(limit: int = 8) -> list:
     for url, source, weight in CRYPTO_RSS:
         items = await _fetch_rss(url)
         for it in items:
+            # فقط ۲۴ ساعت اخیر - اخبار قدیمی پرایس شده و به درد نمی‌خوره
+            if not _is_fresh(it["pubDate"], NEWS_MAX_AGE_HOURS):
+                continue
             pct = _calc_impact(it["title"], it["desc"], source_weight=weight)
             all_items.append({
                 "title": it["title"],
@@ -205,10 +265,15 @@ async def fetch_forex_calendar(limit: int = 8) -> list:
                     previous = (ev.findtext("previous") or "").strip()
                     if not title:
                         continue
-                    # فقط رویدادهای مهم/متوسط رو نگه دار، و تمرکز روی USD/EUR/GBP
                     if country not in ("USD", "EUR", "GBP", "JPY", "CNY"):
                         continue
-                    # تاریخ امروز و آینده نزدیک
+                    # فقط رویدادهای ۲۴ ساعت اخیر تا ۲۴ ساعت آینده — قدیمی/دور پرایس شده یا هنوز بی‌اثره
+                    dt = _parse_forex_date(date, time_e)
+                    if dt is not None:
+                        now = datetime.now(timezone.utc)
+                        # بازه: از ۲۴ ساعت قبل تا ۲۴ ساعت بعد
+                        if dt < now - timedelta(hours=NEWS_MAX_AGE_HOURS) or dt > now + timedelta(hours=NEWS_MAX_AGE_HOURS):
+                            continue
                     pct = _calc_impact(title, calendar_importance=impact, source_weight=45)
                     # فقط تاثیر متوسط به بالا رو نشون بده (کم‌اهمیت‌ها نویزن)
                     if pct < 35:
@@ -245,9 +310,9 @@ async def get_combined_news(crypto_limit: int = 6, forex_limit: int = 4) -> list
 
 def format_news_message(news_list: list, max_items: int = 8) -> str:
     if not news_list:
-        return "📰 در حال حاضر خبر مهم جدیدی پیدا نشد. چند دقیقه دیگه دوباره امتحان کن."
-    lines = ["📰 *اخبار مهم تاثیرگذار بر بازار*\n"]
-    lines.append("_هر خبر با درصد تاثیر تخمینی روی مارکت (بر اساس اهمیت رویداد و کلمات کلیدی)_")
+        return "📰 در ۲۴ ساعت اخیر خبر مهم جدیدی پیدا نشد. چند ساعت دیگه دوباره /news رو بزن."
+    lines = ["📰 *اخبار مهم ۲۴ ساعت اخیر — تاثیرگذار بر بازار*\n"]
+    lines.append("_فقط اخبار ۲۴ ساعت اخیر (اخبار قدیمی‌تر پرایس شده) — هر خبر با درصد تاثیر تخمینی_")
     lines.append("")
     for i, n in enumerate(news_list[:max_items], 1):
         bar_len = max(1, n["impact"] // 10)

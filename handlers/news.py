@@ -5,10 +5,10 @@ import database as db
 import news as news_module
 
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/news - نمایش اخبار مهم با درصد تاثیر"""
-    await update.message.reply_text("⏳ در حال دریافت اخبار مهم بازار...", parse_mode=ParseMode.MARKDOWN)
+    """/news - نمایش اخبار مهم با درصد تاثیر — همیشه بروز (بدون کش)"""
+    await update.message.reply_text("⏳ در حال دریافت بروزترین اخبار بازار...", parse_mode=ParseMode.MARKDOWN)
     try:
-        items = await news_module.get_combined_news(crypto_limit=6, forex_limit=4)
+        items = await news_module.get_combined_news(crypto_limit=6, forex_limit=4, force=True)
         text = news_module.format_news_message(items, max_items=8)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 بروزرسانی", callback_data="news:refresh")],
@@ -46,9 +46,9 @@ async def handle_news_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = query.from_user.id
 
     if data == "news:refresh":
-        await query.edit_message_text("⏳ در حال بروزرسانی اخبار...")
+        await query.edit_message_text("⏳ در حال دریافت بروزترین اخبار...")
         try:
-            items = await news_module.get_combined_news(crypto_limit=6, forex_limit=4)
+            items = await news_module.get_combined_news(crypto_limit=6, forex_limit=4, force=True)
             text = news_module.format_news_message(items, max_items=8)
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 بروزرسانی", callback_data="news:refresh")],

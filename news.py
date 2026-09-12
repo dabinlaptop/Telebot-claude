@@ -13,8 +13,12 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 import httpx
 
-# فقط اخبار/رویدادهای ۲۴ ساعت اخیر (یا ۲۴ ساعت آینده برای تقویم) نمایش داده می‌شن
-NEWS_MAX_AGE_HOURS = 24
+# فقط اخبار امروز (از ۰۰:۰۰ امروز به وقت تهران) — نه ۲۴ ساعت گذشته
+from zoneinfo import ZoneInfo
+try:
+    TEHRAN_TZ = ZoneInfo("Asia/Tehran")
+except Exception:
+    TEHRAN_TZ = timezone(timedelta(hours=3, minutes=30))
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +52,19 @@ def _parse_pubdate(pubdate_str: str) -> datetime | None:
     except Exception:
         return None
 
-def _is_fresh(pubdate_str: str, max_age_hours: int = NEWS_MAX_AGE_HOURS) -> bool:
-    """آیا خبر در ۲۴ ساعت اخیر منتشر شده؟ اگه تاریخ قابل پارس نباشه، تازه فرض می‌شه تا لیست خالی نمونه"""
+def _is_today(pubdate_str: str) -> bool:
+    """آیا خبر مال امروزه (از ۰۰:۰۰ امروز به وقت تهران)؟ اگه تاریخ قابل پارس نباشه، تازه فرض می‌شه"""
     dt = _parse_pubdate(pubdate_str)
     if dt is None:
         return True
-    now = datetime.now(timezone.utc)
-    age = now - dt.astimezone(timezone.utc)
-    # خبرهای آینده (ساعت سرور جلوتر) هم تازه حساب می‌شن
-    if age.total_seconds() < 0:
-        return True
-    return age <= timedelta(hours=max_age_hours)
+    # تبدیل به وقت تهران و مقایسه تاریخ شمسی/میلادی همون روز
+    dt_tehran = dt.astimezone(TEHRAN_TZ)
+    now_tehran = datetime.now(TEHRAN_TZ)
+    return dt_tehran.date() == now_tehran.date()
+
+# alias برای سازگاری
+def _is_fresh(pubdate_str: str, max_age_hours: int = 24) -> bool:
+    return _is_today(pubdate_str)
 
 def _parse_forex_date(date_str: str, time_str: str) -> datetime | None:
     """پارس تاریخ ForexFactory: date مثل '09-12-2024' یا '2024-09-12' و time مثل '10:00am'"""
@@ -218,8 +224,8 @@ async def fetch_crypto_news(limit: int = 8, force: bool = False) -> list:
     for url, source, weight in CRYPTO_RSS:
         items = await _fetch_rss(url)
         for it in items:
-            # فقط ۲۴ ساعت اخیر - اخبار قدیمی پرایس شده و به درد نمی‌خوره
-            if not _is_fresh(it["pubDate"], NEWS_MAX_AGE_HOURS):
+            # فقط اخبار امروز (از ۰۰:۰۰ امروز به وقت تهران)
+            if not _is_today(it["pubDate"]):
                 continue
             pct = _calc_impact(it["title"], it["desc"], source_weight=weight)
             all_items.append({
@@ -269,12 +275,12 @@ async def fetch_forex_calendar(limit: int = 8, force: bool = False) -> list:
                         continue
                     if country not in ("USD", "EUR", "GBP", "JPY", "CNY"):
                         continue
-                    # فقط رویدادهای ۲۴ ساعت اخیر تا ۲۴ ساعت آینده — قدیمی/دور پرایس شده یا هنوز بی‌اثره
+                    # فقط رویدادهای امروز (به وقت تهران)
                     dt = _parse_forex_date(date, time_e)
                     if dt is not None:
-                        now = datetime.now(timezone.utc)
-                        # بازه: از ۲۴ ساعت قبل تا ۲۴ ساعت بعد
-                        if dt < now - timedelta(hours=NEWS_MAX_AGE_HOURS) or dt > now + timedelta(hours=NEWS_MAX_AGE_HOURS):
+                        dt_tehran = dt.astimezone(TEHRAN_TZ)
+                        now_tehran = datetime.now(TEHRAN_TZ)
+                        if dt_tehran.date() != now_tehran.date():
                             continue
                     pct = _calc_impact(title, calendar_importance=impact, source_weight=45)
                     # فقط تاثیر متوسط به بالا رو نشون بده (کم‌اهمیت‌ها نویزن)
@@ -312,9 +318,9 @@ async def get_combined_news(crypto_limit: int = 6, forex_limit: int = 4, force: 
 
 def format_news_message(news_list: list, max_items: int = 8) -> str:
     if not news_list:
-        return "📰 در ۲۴ ساعت اخیر خبر مهم جدیدی پیدا نشد. چند ساعت دیگه دوباره /news رو بزن."
-    lines = ["📰 *اخبار مهم ۲۴ ساعت اخیر — تاثیرگذار بر بازار*\n"]
-    lines.append("_فقط اخبار ۲۴ ساعت اخیر (اخبار قدیمی‌تر پرایس شده) — هر خبر با درصد تاثیر تخمینی_")
+        return "📰 امروز هنوز خبر مهم جدیدی منتشر نشده. چند ساعت دیگه دوباره /news رو بزن."
+    lines = ["📰 *اخبار مهم امروز — تاثیرگذار بر بازار*\n"]
+    lines.append("_فقط اخبار امروز (از ۰۰:۰۰ به وقت تهران) — هر خبر با درصد تاثیر تخمینی_")
     lines.append("")
     for i, n in enumerate(news_list[:max_items], 1):
         bar_len = max(1, n["impact"] // 10)

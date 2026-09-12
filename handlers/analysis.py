@@ -346,6 +346,18 @@ async def run_single_timeframe_signal(symbol: str, timeframe: str, user_id: int 
             result, higher_tf_info, btc_corr_info, position_size,
             order_book_info, coin_fundamentals, market_fundamentals
         )
+        # اخبار مهم (اگه کاربر غیرفعال نکرده باشه) - خلاصه کوتاه زیر سیگنال
+        if user_id is not None:
+            try:
+                news_enabled = await db.get_user_news_enabled(user_id)
+                if news_enabled:
+                    import news as news_module
+                    news_items = await news_module.get_combined_news(crypto_limit=4, forex_limit=2)
+                    brief = news_module.format_brief_for_signal(news_items, max_items=2)
+                    if brief:
+                        text += brief
+            except Exception:
+                pass
         levels = None
         if result.direction != "NEUTRAL":
             levels = {"entry": result.entry, "sl": result.sl, "tps": result.tps}

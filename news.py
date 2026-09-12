@@ -209,10 +209,11 @@ async def _fetch_rss(url: str) -> list:
         logger.warning(f"RSS fetch failed {url}: {e}")
         return []
 
-async def fetch_crypto_news(limit: int = 8) -> list:
-    cached = _cache_get("crypto_news", CACHE_TTL_NEWS)
-    if cached is not None:
-        return cached[:limit]
+async def fetch_crypto_news(limit: int = 8, force: bool = False) -> list:
+    if not force:
+        cached = _cache_get("crypto_news", CACHE_TTL_NEWS)
+        if cached is not None:
+            return cached[:limit]
     all_items = []
     for url, source, weight in CRYPTO_RSS:
         items = await _fetch_rss(url)
@@ -238,10 +239,11 @@ async def fetch_crypto_news(limit: int = 8) -> list:
     return all_items[:limit]
 
 # --- تقویم فارکس (ForexFactory) ---
-async def fetch_forex_calendar(limit: int = 8) -> list:
-    cached = _cache_get("forex_calendar", CACHE_TTL_CALENDAR)
-    if cached is not None:
-        return cached[:limit]
+async def fetch_forex_calendar(limit: int = 8, force: bool = False) -> list:
+    if not force:
+        cached = _cache_get("forex_calendar", CACHE_TTL_CALENDAR)
+        if cached is not None:
+            return cached[:limit]
     # ForexFactory weekly calendar XML
     urls = [
         "https://nfs.faireconomy.media/ff_calendar_thisweek.xml",
@@ -300,10 +302,10 @@ async def fetch_forex_calendar(limit: int = 8) -> list:
     _cache_set("forex_calendar", items)
     return items[:limit]
 
-async def get_combined_news(crypto_limit: int = 6, forex_limit: int = 4) -> list:
-    """ترکیب اخبار کریپتو + تقویم فارکس، مرتب بر اساس تاثیر"""
-    crypto = await fetch_crypto_news(limit=crypto_limit)
-    forex = await fetch_forex_calendar(limit=forex_limit)
+async def get_combined_news(crypto_limit: int = 6, forex_limit: int = 4, force: bool = False) -> list:
+    """ترکیب اخبار کریپتو + تقویم فارکس، مرتب بر اساس تاثیر — اگه force=True کش نادیده گرفته می‌شه"""
+    crypto = await fetch_crypto_news(limit=crypto_limit, force=force)
+    forex = await fetch_forex_calendar(limit=forex_limit, force=force)
     combined = crypto + forex
     combined.sort(key=lambda x: x["impact"], reverse=True)
     return combined
